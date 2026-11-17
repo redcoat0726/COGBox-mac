@@ -8,11 +8,12 @@ Upstream's Windows build — Visual Studio, `tools\build.ps1`, the MinGW launche
 [building.md](building.md), kept exactly as Shagg wrote it. Read it when you want to compare, not to
 build here.
 
-# Building COGBox for macOS
+## Get the source
 
-Everything above is upstream's **Windows** build. This fork builds the same game programs, plus its
-own launcher, on Apple silicon: Vulkan through LunarG's KosmicKrisp driver on Metal — no Wine, no
-emulator, no MoltenVK. Nothing here is downloaded for you, the same rule as above.
+```sh
+git clone https://github.com/redcoat0726/COGBox-mac.git
+cd COGBox-mac
+```
 
 ## What you need (macOS)
 
