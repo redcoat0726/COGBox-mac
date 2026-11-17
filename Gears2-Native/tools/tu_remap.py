@@ -9,7 +9,7 @@ Data addresses (.rdata / .data): found through the code that references them (li
 a few instructions); each referencing site is matched as code and the address it builds in the patched image is read.
 
 Usage: tu_remap.py base.bin patched.bin inventory.txt [--out remap.txt]
-inventory.txt: lines "kind | 0xADDRESS | where | note" (notes/63-tu6-addresses.txt); kind 'data' forces the data
+inventory.txt: lines "kind | 0xADDRESS | where | note"; kind 'data' forces the data
 method; anything else is tried as code first, then as data if the word there is not an instruction we can anchor on.
 """
 import struct, sys, collections, argparse

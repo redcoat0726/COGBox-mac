@@ -4,7 +4,8 @@
 // plain x86-64 baseline (CMakeLists sets that per file), and its check runs among the compiler's own start-up work
 // (init_seg(compiler)), before our other start-up code. It only reads the CPU's feature bits; nothing is changed.
 // GN_CPU_LEVEL is the level the build asked for; with the baseline (empty) the check does nothing.
-#if !defined(_M_ARM64)
+// macOS port: the check reads x86 CPUID through <intrin.h>; there is nothing to check on arm64 or on POSIX.
+#if !defined(_M_ARM64) && defined(_WIN32)
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

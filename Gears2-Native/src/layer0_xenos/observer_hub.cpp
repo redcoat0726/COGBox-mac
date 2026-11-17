@@ -11,14 +11,18 @@
 #include <rex/graphics/draw_observer.h>
 #include <rex/logging/macros.h>
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <intrin.h>
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifdef _WIN32   // macOS port: only the thread naming below needs it
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -102,12 +106,21 @@ class ObserverHub final : public DrawObserver {
     every_ = every;
     timing_ = every > 0;
     // Calibrate rdtsc against QueryPerformanceCounter over ~50 ms (invariant TSC on current CPUs).
+#ifdef _WIN32
     LARGE_INTEGER f, a, b;
     QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&a);
     const uint64_t r0 = __rdtsc();
     do { QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 20 < f.QuadPart);
     tsc_per_ms_ = double(__rdtsc() - r0) / (double(b.QuadPart - a.QuadPart) * 1000.0 / double(f.QuadPart));
+#else
+    // macOS port: steady_clock replaces QueryPerformanceCounter; the calibration is otherwise the same.
+    const auto c0 = std::chrono::steady_clock::now();
+    const uint64_t r0 = __rdtsc();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
+    tsc_per_ms_ = ms > 0.0 ? double(__rdtsc() - r0) / ms : 0.0;
+#endif
   }
 
  private:

@@ -1,0 +1,14 @@
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -44,5 +44,11 @@
+   void AddDriver(std::unique_ptr<InputDriver> driver);
+   void AttachWindow(rex::ui::Window* window);
++  // macOS port (upstream 0.6.2 game code calls these): DualSense adaptive triggers are not in this SDK tree.
++  // No-ops, and the feature reports itself off, so the experimental path stays disabled.
++  void SetTriggerRumble(uint32_t, uint8_t, uint8_t, uint32_t) {}
++  void SetTriggerEffect(uint32_t, const uint8_t*, const uint8_t*) {}
++  static bool AdaptiveTriggersEnabled() { return false; }
++  static bool TriggerRumbleEnabled() { return false; }
+   void SetActiveCallback(std::function<bool()> callback);
+ 
+   /// Replaces any previous assignment. Call before the guest starts polling.

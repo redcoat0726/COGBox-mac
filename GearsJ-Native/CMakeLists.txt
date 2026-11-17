@@ -34,11 +34,26 @@ include(cmake/rexglue.cmake)
 file(GLOB GN_LAYER0_SOURCES CONFIGURE_DEPENDS ${GN_LAYER0_DIR}/*.cpp ${GN_LAYER0_DIR}/renderer/*.cpp ${GN_LAYER0_DIR}/input/*.cpp)
 # The vendor-SDK wrappers are added below only when their SDK is there (job 052).
 list(FILTER GN_LAYER0_SOURCES EXCLUDE REGEX "(dlss|fsr|xess)_upscaler\\.cpp$")
+# Gears 2's macOS build marks these as HEADER_FILE_ONLY: their bodies are Win32 (minidumps,
+# XInput, DXGI adapter reports, GetFileEx attributes, PNG screenshots). Idempotent port patch.
+if(NOT WIN32)
+    list(FILTER GN_LAYER0_SOURCES EXCLUDE REGEX
+        "(save_watch|frame_capture|ingame_menu|latency_reflex|crash_report|system_report|prompt_overlay_compositor|dlss_framegen|xess_framegen|social_ingame|social_page|social_popup|social_shared)\\.cpp$")
+endif()
 add_library(gn_layer0_xenos STATIC ${GN_LAYER0_SOURCES})
 target_include_directories(gn_layer0_xenos PUBLIC ${GN_LAYER0_DIR}/include)
 include(${GN_LAYER0_HOME}/cmake/spirv_opt.cmake)  # 0.6.1: SPIRV-Tools' optimiser for the Vulkan shader path
 gn_add_spirv_opt(gn_layer0_xenos ${GN_THIRD_PARTY})
 target_include_directories(gn_layer0_xenos PRIVATE ${GN_THIRD_PARTY}/flip/src/cpp/tool)
+# Gears 2's port-shim: the screenshot writer and the x86 intrinsic stand-ins.
+target_include_directories(gn_layer0_xenos PRIVATE ${GN_LAYER0_HOME}/port-shim)
+if(APPLE)
+    target_compile_definitions(gn_layer0_xenos PRIVATE GN_MACOS=1)
+    target_compile_options(gn_layer0_xenos PRIVATE "SHELL:-include ${GN_LAYER0_HOME}/port-shim/x86_compat.h")
+    if(EXISTS ${GN_LAYER0_HOME}/../../sdk-overlay/include)
+        target_include_directories(gn_layer0_xenos BEFORE PRIVATE ${GN_LAYER0_HOME}/../../sdk-overlay/include)
+    endif()
+endif()
 target_link_libraries(gn_layer0_xenos PUBLIC rex::runtime)
 set(GN_DEPS_THIRD_PARTY ${GN_THIRD_PARTY})
 include(${GN_LAYER0_HOME}/cmake/gn_deps.cmake)   # GN_DXC_DIR, GN_AGILITY_DIR, GN_XESS_DIR (0.4.9)
@@ -119,6 +134,15 @@ else()
     add_executable(gowj ${GOWJ_SOURCES})
 endif()
 target_include_directories(gowj PRIVATE src/layer3_gowj)
+if(APPLE)
+    target_compile_definitions(gowj PRIVATE GN_MACOS=1)
+    target_compile_options(gowj PRIVATE "SHELL:-include ${GN_LAYER0_HOME}/port-shim/x86_compat.h")
+    target_include_directories(gowj PRIVATE ${GN_LAYER0_HOME}/port-shim)
+endif()
+# xenos/frame_limiter.h comes from the shared layer 0 (TickCallSites/PaceCheck); the compat copy is the older
+# 0.4.8 header and must not shadow it. compat still supplies win32_seh.h.
+target_include_directories(gowj BEFORE PRIVATE ${GN_LAYER0_DIR}/include)
+target_include_directories(gowj PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../port/tools/compat)
 target_link_libraries(gowj PRIVATE gn_layer2_ue3)
 # 0.2.0 (GitHub #9): DirectX 12 Agility SDK - D3D12Core.dll in <exe>\D3D12\, chosen by agility.cpp's exports, so
 # Shader Model 6.6 works on Windows 10's older Direct3D 12 runtime too.
@@ -134,12 +158,14 @@ else()
 endif()
 # GPU_PLUGINS xenos: the SDK's Xenos GPU emulation, the reference our renderer is compared with (developer builds).
 rexglue_setup_target(gowj GPU_PLUGINS xenos)
-add_custom_command(TARGET gowj POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${GN_DXC_DIR}/bin/x64/dxcompiler.dll ${GN_DXC_DIR}/bin/x64/dxil.dll $<TARGET_FILE_DIR:gowj>
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${GN_G2_DIR}/assets/glyphs $<TARGET_FILE_DIR:gowj>/assets/glyphs
-    COMMENT "Copying dxcompiler.dll, dxil.dll, and assets/glyphs next to gowj.exe")
+if(WIN32)
+    add_custom_command(TARGET gowj POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${GN_DXC_DIR}/bin/x64/dxcompiler.dll ${GN_DXC_DIR}/bin/x64/dxil.dll $<TARGET_FILE_DIR:gowj>
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${GN_G2_DIR}/assets/glyphs $<TARGET_FILE_DIR:gowj>/assets/glyphs
+        COMMENT "Copying dxcompiler.dll, dxil.dll, and assets/glyphs next to gowj.exe")
+endif()
 
 # Upscalers (job 052, from Gears 2 notes/64 and notes/65): DLSS, FSR and XeSS are built in when their SDKs are in
 # Gears 2's third_party folder (read-only, never committed). GN_WITH_DLSS / GN_WITH_FSR / GN_WITH_XESS switch one off.
@@ -296,13 +322,15 @@ if(GN_CPU_ARCH STREQUAL "")
     set(GN_CPU_ARCH "x86-64-v3")
 endif()
 message(STATUS "GearsJ-Native: CPU level '${GN_CPU_ARCH}'")
-foreach(gn_t gowj_recomp gowj gn_layer0_xenos gn_layer2_ue3)
-    if(TARGET ${gn_t})
-        target_compile_options(${gn_t} PRIVATE -march=${GN_CPU_ARCH} -ffp-contract=off)
-    endif()
-endforeach()
-set_source_files_properties(${GN_LAYER0_DIR}/cpu_check.cpp PROPERTIES
-    COMPILE_OPTIONS "-march=x86-64" COMPILE_DEFINITIONS "GN_CPU_LEVEL=\"${GN_CPU_ARCH}\"")
+if(GN_CPU_ARCH AND NOT APPLE)   # macOS port: -march=x86-64-v3 means nothing on arm64
+    foreach(gn_t gowj_recomp gowj gn_layer0_xenos gn_layer2_ue3)
+        if(TARGET ${gn_t})
+            target_compile_options(${gn_t} PRIVATE -march=${GN_CPU_ARCH} -ffp-contract=off)
+        endif()
+    endforeach()
+    set_source_files_properties(${GN_LAYER0_DIR}/cpu_check.cpp PROPERTIES
+        COMPILE_OPTIONS "-march=x86-64" COMPILE_DEFINITIONS "GN_CPU_LEVEL=\"${GN_CPU_ARCH}\"")
+endif()
 set(gn_pgo_targets gowj_recomp gowj gn_layer0_xenos gn_layer2_ue3)
 set(gn_pgo_gen_flag -fprofile-instr-generate)
 set(gn_pgo_use_flag -fprofile-instr-use)

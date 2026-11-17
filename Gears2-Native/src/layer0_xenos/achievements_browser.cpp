@@ -29,8 +29,14 @@ using popup::Col;
 int LocalOffsetMinutes(int64_t unix_seconds) {
   const std::time_t t = static_cast<std::time_t>(unix_seconds);
   std::tm local{};
+#if defined(_WIN32)
   if (localtime_s(&local, &t) != 0) return 0;
   return static_cast<int>((_mkgmtime(&local) - t) / 60);
+#else
+  // macOS port: the POSIX spellings of the MSVC CRT pair.
+  if (!localtime_r(&t, &local)) return 0;
+  return static_cast<int>((timegm(&local) - t) / 60);
+#endif
 }
 
 const ImU32 kCrimson = IM_COL32(200, 34, 26, 255);

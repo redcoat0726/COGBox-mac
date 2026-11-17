@@ -17,7 +17,11 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifdef _WIN32
 #include <windows.h>   // GetModuleFileNameA (the screenshot's game name)
+#else
+#include <unistd.h>    // getprogname (macOS port: the screenshot's game name)
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -176,7 +180,11 @@ void XenosInstallFrameCaptureIfRequested() {
   {  // Shagg 3 Nov: the screenshot key, every game, always
     static Screenshot shot;
     char exe[260] = {};
+#ifdef _WIN32
     if (GetModuleFileNameA(nullptr, exe, sizeof(exe))) {
+#else
+    if (std::snprintf(exe, sizeof(exe), "%s", getprogname()) > 0) {
+#endif
       const std::string stem = std::filesystem::path(exe).stem().string();
       shot.game_ = stem == "gow1" ? "Gears1" : stem == "gow2" ? "Gears2" : stem == "gow3" ? "Gears3" : stem == "gowj" ? "Judgment" : stem;
     }

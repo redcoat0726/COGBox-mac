@@ -71,8 +71,10 @@ void XenosRendererFatal(const std::string& why, bool vulkan);   // d3d12_backend
 #include <rex/system/interfaces/graphics.h>
 #include <rex/system/xvideo.h>
 #include <rex/kernel/xboxkrnl/video.h>
+#ifdef _WIN32   // macOS port: the D3D12 presenter/provider do not exist off Windows
 #include <rex/ui/d3d12/d3d12_presenter.h>
 #include <rex/ui/d3d12/d3d12_provider.h>
+#endif
 // SDK Vulkan classes: the SDK built with REXGLUE_USE_VULKAN, and renderdoc_app.h reachable (rex/ui/vulkan/instance.h
 // includes it; job 375: rex::runtime doesn't pass that include folder on, CMakeLists links rex::renderdoc for it).
 #if defined(REX_HAS_VULKAN) && REX_HAS_VULKAN && __has_include(<renderdoc_app.h>)
@@ -87,6 +89,7 @@ void XenosRendererFatal(const std::string& why, bool vulkan);   // d3d12_backend
 #include <rex/ui/flags.h>  // present_hdr (SDK patch 24)
 
 #include <algorithm>
+#include <stb_image_write.h>
 #include <source_location>
 #include <tuple>
 #include <array>
@@ -97,7 +100,9 @@ void XenosRendererFatal(const std::string& why, bool vulkan);   // d3d12_backend
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <intrin.h>
+#endif
 #include <span>
 #include <cstring>
 #include <deque>
@@ -117,7 +122,14 @@ void XenosRendererFatal(const std::string& why, bool vulkan);   // d3d12_backend
 extern "C" int __llvm_profile_write_file(void);
 #endif
 
-REXCVAR_DEFINE_STRING(gow2_renderer_api, "d3d12", "Gears2",
+// macOS port: D3D12 does not exist on macOS; Vulkan (KosmicKrisp) is the only renderer there, so
+// it is the default instead of an option.
+#if defined(__APPLE__)
+#define GN_DEFAULT_RENDERER_API "vulkan"
+#else
+#define GN_DEFAULT_RENDERER_API "d3d12"
+#endif
+REXCVAR_DEFINE_STRING(gow2_renderer_api, GN_DEFAULT_RENDERER_API, "Gears2",
                       "Notes/68: the graphics API our renderer uses - d3d12 (default) | vulkan (stage V2: draws, but "
                       "no resolves or present yet, so no picture - a test mode)");
 REXCVAR_DEFINE_BOOL(gow2_renderer_vulkan_direct_spirv, true, "Gears2",
@@ -1176,7 +1188,7 @@ REXCVAR_DEFINE_INT32(gow2_renderer_fused_scaled_check, 0, "Gears2",
                      "fuse049 diagnostic (with --gow2_renderer_fused_scaled_resolve): every Nth frame, each fused scaled "
                      "resolve also runs the old path into a scaled destination and the GPU compares its words with the "
                      "window's (log: 'fused check'). 0 = off. Up to 400 lines a session");
-REXCVAR_DEFINE_BOOL(gow2_renderer_gpu_timestamp_split, true, "Gears2",
+REXCVAR_DEFINE_BOOL(gow2_renderer_gpu_timestamp_split, false, "Gears2",
                     "Patch 0109 (both APIs, a measurement switch): false = GPU timestamps only at the start and end of "
                     "each command list - the whole-frame GPU time stays, the split by kind of work / target / draw goes "
                     "(the GPU line shows it all as 'draws'). Each Vulkan timestamp waits for all earlier work "
@@ -1289,6 +1301,7 @@ REXCVAR_DEFINE_STRING(gow2_present, "off", "Gears2",
                       "ours and the front buffer is no longer written to guest memory (both need "
                       "--gow2_renderer_display=ours and --gow2_pm4_execute for the gamma ramps; ours needs SDK patch "
                       "23)");
+
 // Takeover T2 (notes/50): our resolves feed the game's later texture reads. Each colour/depth resolve we do is also
 // written, tiled and endian-swapped, into our GPU's guest-memory mirror, and those pages are marked as ours: our texture
 // loads read them instead of the emulator's bytes until the CPU writes there again. Resolves we can't do yet (MSAA
@@ -1590,10 +1603,20 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
         const uint32_t fam = dev->queue_family_graphics_compute();
         auto* queue = dev->queue_families()[fam].queues[0].get();  // the presenter's contract: graphics + compute queue 0
         const auto& pr = dev->properties();
-        if (!pr.dynamicRendering || !pr.synchronization2 || !pr.timelineSemaphore) {
+        // macOS port: the per-feature flags on VulkanDevice::Properties come from COGBox's SDK patch. They are used
+        // whenever the SDK has them - on Windows, and on macOS when building against the SDK built from source
+        // (GN_SDK_COGBOX_PATCH). Against the *released* SDK the fields do not exist, so the values fall back to what
+        // Vulkan 1.3 guarantees; push descriptors then stay off because that SDK cannot say whether it has them.
+#if defined(_WIN32) || defined(GN_SDK_COGBOX_PATCH)
+        const bool vk_sync2 = pr.synchronization2, vk_timeline = pr.timelineSemaphore;
+        const bool vk_push = pr.pushDescriptor, vk_bc = pr.textureCompressionBC;
+#else
+        const bool vk_sync2 = true, vk_timeline = true, vk_push = false, vk_bc = true;
+#endif
+        if (!pr.dynamicRendering || !vk_sync2 || !vk_timeline) {
           REXLOG_ERROR("gow2_renderer: Vulkan: the SDK's device lacks dynamic rendering / synchronization2 / timeline "
                        "semaphores ({} {} {}) - SDK patch 33 missing? Frame shots only", pr.dynamicRendering,
-                       pr.synchronization2, pr.timelineSemaphore);
+                       vk_sync2, vk_timeline);
         } else {
           vk_external_.instance = dev->vulkan_instance()->instance();
           vk_external_.physical_device = dev->physical_device();
@@ -1606,11 +1629,11 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
           vk_external_.lock_user = queue;
           vk_external_.lock = [](void* q) { static_cast<rex::ui::vulkan::VulkanDevice::Queue*>(q)->mutex.lock(); };
           vk_external_.unlock = [](void* q) { static_cast<rex::ui::vulkan::VulkanDevice::Queue*>(q)->mutex.unlock(); };
-          vk_external_.push_descriptor = pr.pushDescriptor;
+          vk_external_.push_descriptor = vk_push;
           vk_external_.depth_clamp = pr.depthClamp;
           vk_external_.fill_mode_non_solid = pr.fillModeNonSolid;
           vk_external_.anisotropy = pr.samplerAnisotropy;
-          vk_external_.texture_compression_bc = pr.textureCompressionBC;
+          vk_external_.texture_compression_bc = vk_bc;
           vk_external_.occlusion_query_precise = pr.occlusionQueryPrecise;  // 0.6.1
           options.vulkan_external = &vk_external_;
           presenter_ = presenter;
@@ -1624,6 +1647,7 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
     if (vk_headless_present_)
       REXLOG_WARN("gow2_renderer: Vulkan: our present runs without a window image (the SDK has no Vulkan presenter here) "
                   "- frame shots only");
+#ifdef _WIN32   // macOS port: the D3D12 provider/presenter do not exist off Windows
     if (!vulkan && REXCVAR_GET(gow2_present) == "ours") {  // Stage 5C-2: the presenter's device and direct queue
       auto* gs = runtime->graphics_system();
       auto* provider = gs ? dynamic_cast<rex::ui::d3d12::D3D12Provider*>(gs->provider()) : nullptr;
@@ -1638,6 +1662,7 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
         XenosLatencySetDevice(options.external_device);  // patch 0135: Reflex works on the presenting device
       }
     }
+#endif
     std::string error;
     if (!backend_->Init(options, error)) {
       REXLOG_ERROR("gow2_renderer: device init failed: {}; staying off", error);
@@ -2258,7 +2283,12 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
       const std::string p = REXCVAR_GET(gow2_present);
       present_shadow_ = p == "shadow";
       present_ours_ = p == "ours" && (presenter_ || vk_headless_present_);
-      hdr_ = REXCVAR_GET(present_hdr);
+
+#if defined(_WIN32) || defined(GN_SDK_COGBOX_PATCH)
+      hdr_ = REXCVAR_GET(present_hdr);   // the cvar is added by COGBox's SDK patch
+#else
+      hdr_ = false;   // macOS port: the released SDK has no present_hdr cvar; HDR output is a presenter path
+#endif
       if (hdr_) {
         const gpu::ShaderHandle he =
             cache_->GetBuiltin("native_hdr_encode_cs", rr::native_hdr::kEncodeCs, gpu::ShaderStage::kCompute);
@@ -2290,6 +2320,7 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
         REXLOG_WARN("gow2_present: needs --gow2_renderer_display=ours (our front buffer); off");
         present_shadow_ = present_ours_ = false;
       }
+
       if (present_ours_) {
         const gpu::ShaderHandle pu =
             cache_->GetBuiltin("present_unpack_cs", rr::builtin::kPresentUnpackCs, gpu::ShaderStage::kCompute);
@@ -2298,6 +2329,7 @@ class ShadowRenderer final : public DrawObserver, public XenosUcodeSink {
           REXLOG_ERROR("gow2_present: unpack shader missing; ours OFF");
           present_ours_ = false;
         }
+
         if (present_ours_ && REXCVAR_GET(gow2_present_native_size)) {  // "Match my monitor"
           const gpu::ShaderHandle rs =
               cache_->GetBuiltin("present_resample_cs", rr::builtin::kPresentResampleCs, gpu::ShaderStage::kCompute);
@@ -2420,6 +2452,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
 
   void OnDraw(const RegisterFile& regs, gx::PrimitiveType primitive, uint32_t index_count,
               const ObservedIndexBuffer* index_buffer, bool major_mode_explicit) override {
+
     if (!backend_ || backend_->IsLost()) return;
     const uint64_t t0 = __rdtsc();
     fill_.valid = false;  // job 185
@@ -3682,6 +3715,8 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
     backend_->Dispatch(present_gamma_, b, (w + 7) / 8, (h + 7) / 8, 1);
     return true;
   }
+
+
   void PresentShadow(const RegisterFile& regs, const DisplaySource& src, uint32_t fb_width, uint32_t fb_height) {
     uint32_t w = 0, h = 0;
     bool table = false;
@@ -3705,6 +3740,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
 
   // 5C-2: our gamma image into the presenter's guest-output texture, on the presenter's queue, and submitted before the
   // refresher returns (Presenter::RefreshGuestOutput's contract). The display size is the SDK's (VdQueryVideoMode).
+
   void PresentOurs(const RegisterFile& regs, const DisplaySource& src, uint32_t fb_width, uint32_t fb_height) {
     uint32_t w = 0, h = 0;
     bool table = false;
@@ -3855,6 +3891,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
             return true;
           }
 #endif
+#ifdef _WIN32   // macOS port: the D3D12 guest-output context does not exist off Windows
           auto& c = static_cast<rex::ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(context);
           context.SetIs8bpc(table);  // as the SDK: 8bpc for the 256-entry table path without FXAA
           const gpu::TextureHandle out = backend_->ImportTexture(
@@ -3873,6 +3910,11 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
           backend_->Submit();
           wrote = true;
           return true;
+#else
+          (void)context;
+          (void)table;
+          return false;   // macOS port: no D3D12 guest output to write into
+#endif
         });
     if (refreshed && wrote) ++ours_stats_.presented; else ++ours_stats_.refresh_failed;
     // Shagg's to-do 8 (--gow2_screenshot_presented): the screenshot key's image as presented - resized to the window and
@@ -3956,6 +3998,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
   std::unordered_set<uint64_t> native_hdr_unknown_writers_;
   rr::RenderTargetKey native_hdr_key_{};
   bool native_hdr_valid_ = false, native_hdr_aa_ready_ = false;
+  rr::native_hdr::Gears3CurveCache native_hdr_curve_cache_;
   gpu::PipelineHandle native_hdr_smaa_blend_ = 0, native_hdr_copy_ = 0;
   gpu::PipelineHandle native_hdr_ui_prepare_pipe_ = 0, native_hdr_ui_copy_pipe_ = 0, native_hdr_ui_blend_pipe_ = 0;
   gpu::TextureHandle native_hdr_ui_proxy_ = 0, native_hdr_ui_high_ = 0, native_hdr_ui_low_ = 0;
@@ -4053,21 +4096,16 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
   void NativeHdrDraw(const gpu::GraphicsPipelineDesc& original, gpu::PipelineHandle original_pipeline,
                      const rr::GuestShader& vertex, const rr::GuestShader& shader, const rr::RenderTarget* target,
                      const rr::PipelineState& state, const SystemConstants& constants,
-                     Issue&& issue) {
-    if (!hdr_ || !hdr_encode_ || !REXCVAR_GET(gow2_hdr_native) || !target ||
+                     const uint32_t* pixel_constants, Issue&& issue) {
+    if (!hdr_ || hdr_legacy_ || !hdr_encode_ || !REXCVAR_GET(gow2_hdr_native) || !target ||
         !original.color_write_masks[0]) return;
     const bool scene = rr::native_hdr::IsScene(shader.ucode_hash);
+    const bool gears3_scene = shader.ucode_hash == rr::native_hdr::kGears3Scene;
     const auto& blend = original.color_blend[0];
     const bool straight_alpha = blend.enable && blend.src == gpu::BlendFactor::kSrcAlpha &&
         blend.dst == gpu::BlendFactor::kInvSrcAlpha && blend.op == gpu::BlendOp::kAdd;
-    const bool modulation_blend = blend.enable && blend.src == gpu::BlendFactor::kDestColor &&
-        blend.dst == gpu::BlendFactor::kZero && blend.op == gpu::BlendOp::kAdd;
     const bool canvas_material = rr::native_hdr::IsCanvasVertex(vertex.ucode_hash) && straight_alpha;
-    const auto* ui_profile = rr::native_hdr::FindUi(shader.ucode_hash);
-    const bool captured_ui_pair = !ui_profile || !ui_profile->vertex ||
-        (vertex.ucode_hash == ui_profile->vertex &&
-         (ui_profile->modulation ? modulation_blend : straight_alpha));
-    const bool canvas = (ui_profile != nullptr || canvas_material) && captured_ui_pair;
+    const bool canvas = rr::native_hdr::FindUi(shader.ucode_hash) != nullptr || canvas_material;
     const bool scene_ui = shader.ucode_hash == rr::native_hdr::kSceneUi && straight_alpha;
     if (!scene && (!native_hdr_valid_ || !(target->key == native_hdr_key_))) return;
     // The captured profile owns this exact EDRAM target. Other formats/aliases
@@ -4079,13 +4117,8 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
         target->format == gpu::Format::kR8G8B8A8Unorm;
     if (!supported || (!scene && !canvas)) {
       if (native_hdr_valid_ && native_hdr_unknown_writers_.insert(shader.ucode_hash).second)
-        REXLOG_INFO("gow2_native_hdr: later writer {:016X} (Canvas {}, supported {}): reference fallback until next scene; "
-                    "VS {:016X}, captured pair {}, colors {}, samples {}, depth {}, stencil {}, memexport {}, "
-                    "bytecode {}, base {}, pitch {}, format {}, blend {} ({}/{}/{})",
-                    shader.ucode_hash, canvas, supported, vertex.ucode_hash, captured_ui_pair,
-                    original.color_count, original.samples, original.depth_enable, original.stencil_enable,
-                    shader.memexport, shader.dxbc != 0, target->key.base_tiles, target->key.pitch_pixels,
-                    uint32_t(target->format), blend.enable, uint32_t(blend.src), uint32_t(blend.dst), uint32_t(blend.op));
+        REXLOG_INFO("gow2_native_hdr: later writer {:016X} (Canvas {}, supported {}): reference fallback until next scene",
+                    shader.ucode_hash, canvas, supported);
       native_hdr_valid_ = false;
       return;
     }
@@ -4117,7 +4150,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
     pipeline_desc.ps = pixel;
     pipeline_desc.color_formats[0] = gpu::Format::kR16G16B16A16Float;
     pipeline_desc.depth_format = gpu::Format::kUnknown;
-    if (scene || scene_ui) {
+    if (gears3_scene || scene_ui) {
       if (original.gs) { native_hdr_valid_ = false; return; }
       if (backend_->GetShaderIL() == gpu::ShaderIL::kDxil) {
         const auto& twin = cache_->GetDxilTwin(vs_.hash, vs_.dwords, vs_.count);
@@ -4154,8 +4187,18 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
     SystemConstants hdr_constants = constants;
     hdr_constants.sys2[0] = std::bit_cast<uint32_t>(HdrPeak() / HdrSceneWhite());
     hdr_constants.sys2[1] = std::bit_cast<uint32_t>(HdrUiWhite() / HdrSceneWhite());
-    hdr_constants.sys2[2] = std::bit_cast<uint32_t>(HdrHighlights());   // 0.6.2: highlight strength + 1
-    hdr_constants.sys2[3] = 0;
+    if (gears3_scene) {
+      const auto curve = rr::native_hdr::Gears3Curve::FromConstants(pixel_constants);
+      const auto [pivot, slope] = native_hdr_curve_cache_.Get(curve);
+      hdr_constants.sys2[2] = std::bit_cast<uint32_t>(pivot);
+      hdr_constants.sys2[3] = std::bit_cast<uint32_t>(slope);
+      if (native_hdr_generation_ <= 3)
+        REXLOG_INFO("gow2_native_hdr: Gears 3 curve offset {} scale {} blend {}, pivot {} slope {}",
+                    curve.offset, curve.scale, curve.blend, pivot, slope);
+    } else {
+      hdr_constants.sys2[2] = std::bit_cast<uint32_t>(HdrHighlights());   // 0.6.2: highlight strength + 1
+      hdr_constants.sys2[3] = 0;
+    }
     backend_->SetConstants(gpu::ShaderStage::kPixel, gpu::kCbSystem, &hdr_constants, sizeof(hdr_constants));
     backend_->SetPipeline(pipeline);
     issue(nullptr, 0, scene_ui ? native_hdr_ui_high_ : native_hdr_color_, scene_ui ? native_hdr_ui_low_ : 0);
@@ -7305,6 +7348,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
       return;
     }
 #endif
+#ifdef _WIN32
     if (!hl_snap_ || !backend_->BeginNative(&dev, &list)) {
       ++hl_st_.take_fail;
       hl_taken_ = false;
@@ -7321,6 +7365,11 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
       return;
     }
     ++hl_takes_;
+#else
+    // macOS port: the D3D12 copy below is Windows-only; the Vulkan branch above takes the snapshot.
+    ++hl_st_.take_fail;
+    hl_taken_ = hl_armed_ = false;
+#endif
   }
 
   HlDest* HudlessDest(uint64_t key, uint32_t w, uint32_t h) {
@@ -7582,6 +7631,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
     } else
 #endif
     {
+#ifdef _WIN32
     if (!backend_->BeginNative(&dev, &list)) {
       XenosFrameGenerationSetInputs(guest_output, nullptr);
       return;
@@ -7598,6 +7648,11 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
       (i ? out_motion : out_depth) = ready;
     }
     backend_->EndNative();
+#else
+    // macOS port: there is no D3D12 command list here; frame generation runs on Vulkan (the branch above).
+    XenosFrameGenerationSetInputs(guest_output, nullptr);
+    return;
+#endif
     }
     if (!out_depth || !out_motion) {
       XenosFrameGenerationSetInputs(guest_output, nullptr);
@@ -8707,8 +8762,15 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
         cap_now = ("," + list + ",").find(key) != std::string::npos;
       }
     }
+#ifdef _WIN32
     static const bool cap_key = REXCVAR_GET(gow2_upscale_capture_key);  // job 731: developer only, off by default
     if (((cap_key && (GetAsyncKeyState(VK_F9) & 1)) || cap_now) && up_cap_left_ == 0) {  // job 724
+#else
+    // macOS port: GetAsyncKeyState is Win32; the F9 developer key is off, the frame list still works.
+    static const bool cap_key = false;
+    (void)cap_key;
+    if (cap_now && up_cap_left_ == 0) {  // job 724
+#endif
       up_cap_left_ = 6;
       ++up_cap_set_;
       REXLOG_INFO("gow2_upscaler: F9 - saving the next 6 frames' DLSS inputs and outputs (set {}), jitter now {:.3f} {:.3f}",
@@ -10160,11 +10222,20 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
       case rr::Topology::TriangleStrip: d.topology = gpu::Topology::kTriangleStrip; restart = true; break;
       case rr::Topology::RectListAsTriangles:
         d.topology = gpu::Topology::kTriangleList;
+#if defined(GN_MACOS)
+        // macOS port: no geometry shaders on the Vulkan/Metal path. Build the fourth corner on the CPU
+        // and draw the two triangles the GS would have produced; otherwise the draw is skipped and
+        // in-game UI / post-process rectangles disappear.
+        d.gs = 0;
+        rect_ring_pending_ = index_count > 0 && index_count % 3 == 0;
+        rect_ring_quads_ = index_count / 3;
+#else
         d.gs = vsg.dxbc ? rect_gs_dxbc_ : rect_gs_;
         if (!d.gs) {
           SkipForShaders(false);
           return;
         }
+#endif
         break;
       default: d.topology = gpu::Topology::kTriangleList; break;
     }
@@ -10570,6 +10641,28 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
       cached_ib_ = nullptr;  // converted: not the cached buffer
     }
 
+    if (rect_ring_done_) {
+      // macOS port: the fourth corner was appended after each rectangle's three vertices; draw the quad
+      // as the two triangles the geometry shader would have produced (v0v1v2, v0v2v3).
+      rect_ring_done_ = false;
+      const uint32_t quads = rect_ring_quads_;
+      indices_.resize(size_t(quads) * 6);
+      for (uint32_t q = 0; q < quads; ++q) {
+        const uint32_t v = q * 3, corner = quads * 3 + q;
+        indices_[q * 6 + 0] = v;
+        indices_[q * 6 + 1] = v + 1;
+        indices_[q * 6 + 2] = v + 2;
+        indices_[q * 6 + 3] = v;
+        indices_[q * 6 + 4] = v + 2;
+        indices_[q * 6 + 5] = corner;
+      }
+      index_ptr_ = &indices_;
+      indexed = true;
+      cached_ib_ = nullptr;
+      idx_hit = false;
+      idx_keep = false;
+    }
+
     // Draw, then repeat a clear on the other targets that share its tiles.
     textures_part.Switch(kPartRecord);
     backend_->SetPipeline(pipeline);
@@ -10633,7 +10726,7 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
     const uint64_t draws_before = backend_->Stats().draws;  // #315 diagnostic: did the backend record the export draw?
     issue(target, 0);
     const bool export_refused = backend_->Stats().draws == draws_before;
-    if (psg && !export_shader) NativeHdrDraw(d, pipeline, vsg, *psg, colour_rt[0], ps, sc, issue);
+    if (psg && !export_shader) NativeHdrDraw(d, pipeline, vsg, *psg, colour_rt[0], ps, sc, &r[kRegFloatConstPs], issue);
     if (export_shader) backend_->SetGuestWritable(false);
     if (exports) {
       ++stats_.memexport_draws;
@@ -12945,6 +13038,43 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
       if (address + size > (512ull << 20)) size = (512ull << 20) - address;
       size = std::min<uint64_t>(size, 64ull << 20);
       fetch_[2 * i + 1] &= 0x7FFFFFFFu;  // bit 31 is ours (t97); the hardware ignores it
+      if (rect_ring_pending_) {
+        rect_ring_pending_ = false;  // only the first (vertex) fetch slot holds this draw's vertices
+        const uint32_t quads = rect_ring_quads_;
+        const uint64_t group = uint64_t(quads) * 3u;
+        // The fourth corner is v0 + v2 - v1 in every float attribute, which is how the hardware expands a
+        // rectangle list - so any 4-byte-aligned stride works and the vertices need not be in slot 0.
+        const uint32_t rect_stride = (group && size % group == 0) ? uint32_t(size / group) : 0;
+        if (quads && rect_stride >= 12u && rect_stride % 4u == 0u && size >= group * 12u &&
+            uint64_t(address) + size <= (512ull << 20)) {
+          const uint32_t stride = rect_stride;
+          const uint32_t total = uint32_t(size) + quads * stride;
+          std::vector<uint8_t> buf(total);
+          std::memcpy(buf.data(), base + address, size_t(size));
+          // Guest vertex words are big-endian; the shader byte-swaps them, so keep that order here.
+          for (uint32_t q = 0; q < quads; ++q) {
+            for (uint32_t c = 0; c < stride / 4; ++c) {
+              float f[3];
+              for (uint32_t v = 0; v < 3; ++v) {
+                uint32_t w;
+                std::memcpy(&w, buf.data() + stride * (q * 3 + v) + 4 * c, 4);
+                f[v] = std::bit_cast<float>(std::byteswap(w));
+              }
+              const float corner = f[0] + f[2] - f[1];
+              const uint32_t w = std::byteswap(std::bit_cast<uint32_t>(corner));
+              std::memcpy(buf.data() + size + stride * q + 4 * c, &w, 4);
+            }
+          }
+          const uint32_t off = backend_->UploadTransient(buf.data(), total);
+          if (off != UINT32_MAX) {
+            fetch_[2 * i] = off | 3u;  // vertex fetch at ring byte offset (bits 0-1 = 3 select the ring)
+            fetch_[2 * i + 1] = 0x80000000u | ((total / 4) << 2) | (dw1 & 3u);
+            rect_ring_done_ = true;
+            stats_.vertex_bytes += total;
+            return;
+          }
+        }
+      }
       // notes/11: a range holding memexport results (GPU-current pages) is read from the mirror, never from the ring or
       // a CPU copy over them: only its CPU-current pages are copied in.
       if (exports_marked_) {
@@ -14356,6 +14486,12 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
   std::unique_ptr<rr::ShaderCache> cache_;
   std::unique_ptr<rr::RenderTargetCache> rts_;
   gpu::ShaderHandle rect_gs_ = 0;
+
+  // macOS port: a Vulkan/Metal device has no geometry shaders, so a rectangle list's fourth corner
+  // (v0 + v2 - v1) is built in the upload ring and the quad is drawn as two triangles instead of
+  // being skipped (see RectListAsTriangles and UploadVertexSlot).
+  uint32_t rect_ring_quads_ = 0;
+  bool rect_ring_pending_ = false, rect_ring_done_ = false;
   gpu::ShaderHandle rect_gs_dxbc_ = 0;  // the DXBC one, for pipelines of DXBC guest shaders
   std::unique_ptr<cogbox::io::AsyncFileAppender> pipeline_list_;  // patch 0058: pipelines.list, appended to (null = not recording)
   uint64_t pipeline_list_errors_logged_ = 0;  // PR #43: the appender's error count at the last warning

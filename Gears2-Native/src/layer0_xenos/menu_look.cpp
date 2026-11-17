@@ -646,7 +646,7 @@ Action DrawSettings(const Look& L, SettingsPage& pg) {
       if (focused || hovered) {
         cl->AddRectFilled(a, b, focused ? Col(kSteelHi, 0.85f, L) : Col(kSteel, 0.80f, L), 3 * u);
         if (focused) {
-          cl->AddRectFilled(a, ImVec2(a.x + 6 * u, b.y), Col(kRedHi, L), 3 * u, ImDrawFlags_RoundLeft);
+          cl->AddRectFilled(a, ImVec2(a.x + 6 * u, b.y), Col(kRedHi, L), 3 * u, ImDrawFlags_RoundCornersLeft);
           cl->AddRect(a, b, Col(kText, 0.30f, L), 3 * u, 0, std::max(1.f, u));
         }
       } else if (i % 2) {
@@ -697,7 +697,7 @@ Action DrawSettings(const Look& L, SettingsPage& pg) {
     const ImVec2 sa(da.x + 10 * u, db.y - status_h - 4 * u), sb(db.x - 10 * u, db.y - 10 * u);
     const ImVec4 k = pg.restart_changes ? kAmber : kDim;
     dl->AddRectFilled(sa, sb, Col(ImVec4(0.045f, 0.048f, 0.055f, 1.f), L), 3 * u);   // opaque: no game behind the note
-    if (pg.restart_changes) dl->AddRectFilled(sa, ImVec2(sa.x + 4 * u, sb.y), Col(kAmber, L), 3 * u, ImDrawFlags_RoundLeft);
+    if (pg.restart_changes) dl->AddRectFilled(sa, ImVec2(sa.x + 4 * u, sb.y), Col(kAmber, L), 3 * u, ImDrawFlags_RoundCornersLeft);
     dl->AddRect(sa, sb, Col(k, 0.35f, L), 3 * u, 0, std::max(1.f, u));
     Text(dl, L, L.fonts.regular_small, kSmall, ImVec2(da.x + 30 * u, sa.y + 14 * u), Col(k, L), pg.status.c_str(), status_w);
   }

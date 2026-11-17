@@ -23,7 +23,10 @@
 #include <thread>
 #include <vector>
 
+// macOS port: this file only uses the standard library; windows.h was a leftover include.
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 REXCVAR_DEFINE_STRING(cogbox_input_script, "", "COGBox",
                       "Developer mode: a text file of timed controller events played into player 1's controller "
@@ -520,7 +523,11 @@ void Ue3InstallScriptInputIfRequested(rex::Runtime* runtime, uint32_t names_var,
         if (note.verb == "log" || note.verb == "quit") REXLOG_INFO("script_input: {:.1f} s {}{}", note.at, note.verb, note.text);
         if (note.verb == "quit") {
           rex::FlushLogging();
+#ifdef _WIN32
           TerminateProcess(GetCurrentProcess(), 0);
+#else
+          std::_Exit(0);  // macOS port: no TerminateProcess; the scripted test's "quit" ends the process
+#endif
         }
         if (note.verb != "log" && note.verb != "quit")
           std::thread([note] { RunAction(note.verb, note.text); }).detach();

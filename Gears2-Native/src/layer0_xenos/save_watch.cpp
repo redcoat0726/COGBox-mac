@@ -29,7 +29,9 @@
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32   // macOS port: the save watcher polls with Win32 file notifications
 #include <windows.h>
+#endif
 
 REXCVAR_DEFINE_BOOL(cogbox_save_log, true, "Gears2",
                     "GitHub #55: log the save / checkpoint / profile / content (DLC) files in --user_data_root at start "

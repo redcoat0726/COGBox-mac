@@ -69,7 +69,10 @@
 #include <cstdint>
 #include <mutex>
 
+// macOS port: windows.h is here for SEH (__try/__except) in SafeCall below; POSIX has no equivalent.
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 REXCVAR_DEFINE_BOOL(ue3_mouse_look, false, "COGBox",
                     "Native mouse look: the mouse turns the camera through the engine's own PC mouse axes (no stick "
@@ -188,6 +191,7 @@ inline void Drain(double* dx, double* dy) {
 inline std::atomic<int64_t> g_focus_heal_last{0};
 inline std::atomic<int> g_focus_heals{0};
 inline void FocusHeal(rex::ui::Window* w) {
+#ifdef _WIN32
   if (!w || w->HasFocus()) return;
   HWND fg = GetForegroundWindow();
   DWORD pid = 0;
@@ -202,6 +206,10 @@ inline void FocusHeal(rex::ui::Window* w) {
   SetFocus(nullptr);
   SetFocus(fg);
   w->Focus();
+#else
+  // macOS port: GetForegroundWindow / SetFocus are Win32; the macOS window keeps its focus normally.
+  (void)w;
+#endif
 }
 
 class Listener : public rex::ui::WindowInputListener {
@@ -231,12 +239,20 @@ class Listener : public rex::ui::WindowInputListener {
 inline Listener g_listener;
 
 inline bool SafeCall(PPCFunc* fn, PPCContext* c, uint8_t* base) {
+#if defined(_WIN32)
   __try {
     fn(*c, base);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
+#else
+  // macOS port: structured exception handling is Windows-only, so a fault inside the guest call is
+  // no longer turned into `false` - it takes the process down. Worth revisiting if this path starts
+  // being used on a copy that faults, but it is not on the startup path.
+  fn(*c, base);
+  return true;
+#endif
 }
 
 // The motion of this frame, scaled and signed for the game (y up), in whole steps the engine keeps. False when none.

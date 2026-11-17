@@ -1,8 +1,70 @@
-# COGBox: what stays on this PC and never goes to the public repository
+# Shader and pipeline caches: rebuilt on any machine, never committed (shadercache*/ also covers
+# directories renamed aside, e.g. shadercache.keep)
+shadercache*/
+Gears*-Native/shadercache*/
+*.spv.failed.hlsl
+
+# Build output -------------------------------------------------------------------------------------
+build/
+dist/
+port/build/
+*.o
+*.a
+
+# Swift package manager
+.build/
+Package.resolved
+
+# rexglue SDK: downloaded, or derived from a download. Never committed -----------------------------
+# The SDK is BSD-3-Clause and large; these paths are recreated by port/build.sh on any machine.
+port/sdk/
+port/sdk-src/
+port/third_party/
+# Reconstructed from patches/rexglue-sdk.diff by port/tools/make_overlay.py
+port/sdk-overlay/
+
+# Game data: never, under any circumstance --------------------------------------------------------
+# This project reads the player's own disc image at runtime. No game content, in any form,
+# belongs in this repository - not a disc image, not an extracted tree, not a title update.
+*.iso
+*.xex
+*.xexp
+*.god
+*.xbe
+extracted/
+Games/
+
+# Local baseline: build/SDK bulk and runtime artefacts ---------------------------------------------
+port/build*/
+port/sdk-build*/
+port/sdk-*/
+port/library/
+port/analysis/
+*.tgz
+*.spv
+*.dylib
+*.log
+.DS_Store
+__pycache__/
+
+# Vulkan SDK for Apple silicon (KosmicKrisp) - downloaded locally, never committed
+# 100 MB after trimming; the KosmicKrisp ICD, the loader and the validation layer live here.
+tools/VulkanSDK/
+tools/*.7z
+
+# Upstream reference checkout, if someone unpacks one at the top level for comparison
+# (anchored: Gears2-Native/cogbox/ is part of the Gears 2 tree and must stay tracked)
+/cogbox/
+
+# The launcher creates each game tree's lang/ as a symlink to the shared translations
+/*-Native/lang
+*.tar.gz
+*.zip
+
+# COGBox upstream working-tree ignores (carried from the upstream project)
 /releases/
 /history/
 /work/
 *.pre[0-9]*
 /_backups/
-build/
 Testing/

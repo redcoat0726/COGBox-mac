@@ -28,12 +28,16 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// macOS port: windows.h is here for the high-resolution timer only; POSIX uses steady_clock.
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#endif
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
@@ -73,17 +77,25 @@ REXCVAR_DECLARE(std::string, gow2_crash_dir);  // crash_report.cpp
 namespace {
 
 uint64_t Qpc() {
+#if defined(_WIN32)
   LARGE_INTEGER t;
   QueryPerformanceCounter(&t);
   return uint64_t(t.QuadPart);
+#else
+  return uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
 }
 uint64_t QpcFreq() {
+#if defined(_WIN32)
   static const uint64_t f = [] {
     LARGE_INTEGER v;
     QueryPerformanceFrequency(&v);
     return uint64_t(v.QuadPart);
   }();
   return f;
+#else
+  return uint64_t(std::chrono::steady_clock::period::den / std::chrono::steady_clock::period::num);
+#endif
 }
 double TicksToMs(uint64_t ticks) { return double(ticks) * 1000.0 / double(QpcFreq()); }
 

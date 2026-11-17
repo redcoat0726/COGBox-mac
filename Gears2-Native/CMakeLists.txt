@@ -64,6 +64,11 @@ add_library(gn_layer0_xenos STATIC
     src/layer0_xenos/display_gamma.cpp
     src/layer0_xenos/gpu_system.cpp
     src/layer0_xenos/frame_capture.cpp
+    # macOS port: the STB_IMAGE_WRITE implementation lives in frame_capture.cpp above, which is
+    # Windows-only; this file carries it elsewhere (empty on Windows).
+    src/layer0_xenos/stb_image_write_impl.cpp
+    # macOS port: no-op stand-ins for the Windows-only subsystems excluded below (empty on Windows).
+    src/layer0_xenos/macos_feature_stubs.cpp
     src/layer0_xenos/observer_hub.cpp
     src/layer0_xenos/frame_log.cpp
     src/layer0_xenos/image_dump.cpp
@@ -114,6 +119,53 @@ if(GN_VULKAN_HEADERS)
 endif()
 if(WIN32)
     target_link_libraries(gn_layer0_xenos PRIVATE d3d12 dxgi dxguid ole32)
+endif()
+# macOS port: layer 0 has no Windows calls left once the D3D12 backend compiles to its null stub, so the only
+# platform bits left are headers. The screenshot writer comes from port-shim (FLIP's stb header is not in the
+# repository), and the Vulkan headers come from the host (Homebrew or the release SDK's copy above).
+if(APPLE)
+    target_include_directories(gn_layer0_xenos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/port-shim)
+    target_compile_definitions(gn_layer0_xenos PRIVATE GN_MACOS=1)
+    # x86 intrinsics the diagnostics use (__rdtsc, _mm_pause): one header, force-included for every TU.
+    target_compile_options(gn_layer0_xenos PRIVATE "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/port-shim/x86_compat.h")
+    # COGBox's own SDK additions (draw_observer.h, frame_hooks.h) are not in the release SDK; sdk-overlay carries the
+    # headers reconstructed from patches/rexglue-sdk.diff (see sdk-overlay/README.md).
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk-overlay/include)
+        target_include_directories(gn_layer0_xenos BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk-overlay/include)
+        message(STATUS "Gears-Native: SDK overlay headers from ../../sdk-overlay/include")
+    endif()
+    find_path(GN_HOST_VULKAN_HEADERS vulkan/vulkan_core.h
+              PATHS /opt/homebrew/include /usr/local/include /opt/homebrew/opt/molten-vk/include)
+    if(GN_HOST_VULKAN_HEADERS)
+        message(STATUS "Gears-Native: host Vulkan headers ${GN_HOST_VULKAN_HEADERS}")
+        target_include_directories(gn_layer0_xenos PRIVATE ${GN_HOST_VULKAN_HEADERS})
+        target_compile_definitions(gn_layer0_xenos PRIVATE GN_HAVE_VULKAN_HEADERS=1)
+    else()
+        message(WARNING "Gears-Native: no Vulkan headers - the Vulkan backend builds its null stub")
+    endif()
+    # Windows-only developer tooling: these files' *bodies* are Win32 (Anti-Lag 2, XInput, minidumps, DXGI adapter
+    # reports, GetFileEx file attributes, PNG screenshots). They are excluded so the library builds; each one needs a
+    # macOS implementation or a no-op path before the game is playable.
+    set(GN_MACOS_EXCLUDED
+        src/layer0_xenos/save_watch.cpp
+        src/layer0_xenos/frame_capture.cpp
+        src/layer0_xenos/ingame_menu.cpp
+        src/layer0_xenos/latency_reflex.cpp
+        src/layer0_xenos/crash_report.cpp
+        src/layer0_xenos/system_report.cpp
+        src/layer0_xenos/renderer/prompt_overlay_compositor.cpp
+        # 0.6.1: the framegen implementations load Windows DLLs (shared_dlls.h) and have no macOS path.
+        src/layer0_xenos/renderer/dlss_framegen.cpp
+        src/layer0_xenos/renderer/xess_framegen.cpp
+
+        # 0.6.1: the social worker needs the SDK's online patches (77-93), not in this port's SDK.
+        src/layer0_xenos/social_ingame.cpp
+        src/layer0_xenos/social_page.cpp
+        src/layer0_xenos/social_popup.cpp
+        src/layer0_xenos/social_shared.cpp
+    )
+    set_source_files_properties(${GN_MACOS_EXCLUDED} PROPERTIES HEADER_FILE_ONLY TRUE)
+    message(STATUS "Gears-Native: excluding Windows-only sources on macOS")
 endif()
 # Same float rules as the renderer-core tests (review of upl-n092): no FMA contraction in code that includes
 # xenos/gamma.h / resolve maths, so the game and gn_tests round identically.
@@ -186,6 +238,13 @@ if(GN_GAME_VERSION STREQUAL "tu6")
     target_compile_definitions(gow2 PRIVATE GOW2_TU6=1)
 endif()
 
+# macOS port: the only path that puts our image into the window is the SDK's Vulkan presenter
+# (PresentPacked, shadow_renderer.cpp ~1412-1460). On Windows COGBox goes through D3D12 instead, so the
+# flag is never set there; here the presenter IS Vulkan, so the code must be compiled in.
+if(APPLE)
+  target_compile_definitions(gow2 PRIVATE GN_SDK_VULKAN=1)
+endif()
+
 # GPU_PLUGINS xenos: the SDK's Xenos GPU emulation (from Xenia). Kept in developer builds as the reference while our
 # own renderer is built (roadmap decision D1); runs with --gpu_plugin=xenos via tools/run.ps1.
 rexglue_setup_target(gow2 GPU_PLUGINS xenos)
@@ -207,7 +266,7 @@ message(STATUS "Gears2-Native: CPU level '${GN_CPU_ARCH}', perf counters off: ${
 if(TARGET gow2_recomp AND GN_RECOMP_NO_PERF_COUNTERS)
     target_compile_options(gow2_recomp PRIVATE -UREXGLUE_ENABLE_PROFILING)
 endif()
-if(GN_CPU_ARCH)
+if(GN_CPU_ARCH AND NOT APPLE)   # macOS port: -march=x86-64-v3 means nothing on arm64
     foreach(gn_t gow2_recomp gow2 gn_layer0_xenos gn_layer1_xdk7645 gn_layer2_ue3)
         if(TARGET ${gn_t})
             target_compile_options(${gn_t} PRIVATE -march=${GN_CPU_ARCH} -ffp-contract=off)
@@ -284,17 +343,21 @@ else()
     message(STATUS "Gears2-Native: PGO off")
 endif()
 # DXC for our renderer's shader cache: copied next to gow2.exe (dxcompiler.dll loads dxil.dll from there to sign DXIL).
-add_custom_command(TARGET gow2 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:gow2>/licenses
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/cogbox/licenses/PsychoV35-LICENSE.txt $<TARGET_FILE_DIR:gow2>/licenses/PsychoV35-LICENSE.txt
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/cogbox/licenses/RenoDX-Grading-LICENSE.txt $<TARGET_FILE_DIR:gow2>/licenses/RenoDX-Grading-LICENSE.txt
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${GN_DXC_DIR}/bin/x64/dxcompiler.dll ${GN_DXC_DIR}/bin/x64/dxil.dll $<TARGET_FILE_DIR:gow2>
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/assets/glyphs $<TARGET_FILE_DIR:gow2>/assets/glyphs
-    COMMENT "Copying dxcompiler.dll, dxil.dll, and assets/glyphs next to gow2.exe")
+# macOS port: those two DLLs are Windows binaries and there is no DXC here at all (the renderer uses its
+# own DXBC->SPIR-V path on Vulkan), so only the glyph assets are staged.
+if(WIN32)
+    add_custom_command(TARGET gow2 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${GN_DXC_DIR}/bin/x64/dxcompiler.dll ${GN_DXC_DIR}/bin/x64/dxil.dll $<TARGET_FILE_DIR:gow2>
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/assets/glyphs $<TARGET_FILE_DIR:gow2>/assets/glyphs
+        COMMENT "Copying dxcompiler.dll, dxil.dll, and assets/glyphs next to gow2.exe")
+else()
+    add_custom_command(TARGET gow2 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/assets/glyphs $<TARGET_FILE_DIR:gow2>/assets/glyphs
+        COMMENT "Copying assets/glyphs next to gow2")
+endif()
 
 # Upscalers (notes/64, notes/65): DLSS, FSR and XeSS are built in when their SDKs are in third_party (never committed;
 # jobs 250 and 270 download them). GN_WITH_DLSS / GN_WITH_FSR / GN_WITH_XESS switch one off (e.g. if a future SDK does
@@ -506,6 +569,9 @@ target_include_directories(gn_hlsl_check PRIVATE src/layer0_xenos/include)
 
 # Stage 3 S3.4: GPU (D3D12/DXIL) vs the SDK's CPU ShaderInterpreter (patched source, SDK patches 7-8), per shader.
 set(REXGLUE_SDK_SRC ${CMAKE_SOURCE_DIR}/third_party/rexglue-sdk)
+# macOS port: a developer tool that compiles the SDK's own shader interpreter from a *source* checkout and links
+# d3d12/dxgi. A release SDK install ships no source, and D3D12 does not exist on macOS, so skip it there.
+if(WIN32 AND EXISTS ${REXGLUE_SDK_SRC}/src/graphics/pipeline/shader/interpreter.cpp)
 add_executable(gn_shader_oracle
     tools/gn_shader_oracle.cpp
     tools/gn_shader_oracle_d3d12.cpp
@@ -521,6 +587,7 @@ target_include_directories(gn_shader_oracle PRIVATE $<TARGET_PROPERTY:rex::runti
 target_compile_definitions(gn_shader_oracle PRIVATE NDEBUG NOMINMAX WIN32_LEAN_AND_MEAN $<TARGET_PROPERTY:rex::runtime,INTERFACE_COMPILE_DEFINITIONS>)
 target_compile_features(gn_shader_oracle PRIVATE cxx_std_23)
 target_link_libraries(gn_shader_oracle PRIVATE d3d12 dxgi)
+endif()  # gn_shader_oracle
 
 # Patch 0059: gn_pipebench (tools/pipebench) - times the graphics driver's pipeline builds from our DXBC, per
 # translator variant, on this PC's GPU (no game runs). Not part of the normal build: cmake --build <dir> --target gn_pipebench.
@@ -534,6 +601,9 @@ target_link_libraries(gn_vktest PRIVATE gn_layer0_xenos)
 rexglue_apply_target_settings(gn_vktest)
 if(GN_VULKAN_HEADERS)  # notes/68 V3: its external-device check makes a device of its own
     target_include_directories(gn_vktest PRIVATE ${GN_VULKAN_HEADERS})
+    target_compile_definitions(gn_vktest PRIVATE GN_HAVE_VULKAN_HEADERS=1)
+elseif(GN_HOST_VULKAN_HEADERS)   # macOS port: the headers found by the APPLE block above
+    target_include_directories(gn_vktest PRIVATE ${GN_HOST_VULKAN_HEADERS})
     target_compile_definitions(gn_vktest PRIVATE GN_HAVE_VULKAN_HEADERS=1)
 endif()
 if(WIN32)

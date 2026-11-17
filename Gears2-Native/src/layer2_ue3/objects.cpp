@@ -30,7 +30,11 @@ Layout g_L;
 std::unordered_map<std::string, uint32_t> g_classCache;
 bool NameKey(const std::string& full, uint32_t* index, uint32_t* number);  // below
 
+#ifdef _WIN32
 uint32_t Swap(uint32_t v) { return _byteswap_ulong(v); }
+#else
+uint32_t Swap(uint32_t v) { return __builtin_bswap32(v); }  // macOS port
+#endif
 
 uint8_t* Host(uint32_t address) {
   auto* rt = rex::Runtime::instance();
@@ -40,18 +44,28 @@ uint8_t* Host(uint32_t address) {
 // only plain committed memory: a guard page (guest stacks) would lose its guard, and the GPU register pages fault on
 // purpose for the emulated device; neither may be touched from here
 bool PageReadable(const uint8_t* host) {
+#ifdef _WIN32
   MEMORY_BASIC_INFORMATION mbi;
   if (!host || !VirtualQuery(host, &mbi, sizeof(mbi))) return false;
   return mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) && mbi.Protect != 0;
+#else
+  return host != nullptr;  // macOS port: the guest mapping is contiguous and committed
+#endif
 }
 
 bool CopyRaw(void* out, const void* src, size_t size) {
+#ifdef _WIN32
   __try {
     std::memcpy(out, src, size);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
+#else
+  if (!out || !src) return false;  // macOS port: no SEH, the guest mapping does not fault here
+  std::memcpy(out, src, size);
+  return true;
+#endif
 }
 
 // guest pages (4 KB) seen readable, each asked about once (Gears3-Native's: a VirtualQuery per read stalled the title)
@@ -79,6 +93,7 @@ bool Copy(uint32_t address, void* out, size_t size) {
 
 template <class F>
 bool GuardedScan(F& f, uint32_t a, const uint8_t* host, size_t n) {
+#ifdef _WIN32
   bool r = true;
   __try {
     r = f(a, host, n);
@@ -86,11 +101,15 @@ bool GuardedScan(F& f, uint32_t a, const uint8_t* host, size_t n) {
     r = true;
   }
   return r;
+#else
+  return f(a, host, n);  // macOS port: called per committed chunk below
+#endif
 }
 
 // committed guest regions, for the one-time searches
 template <class F>
 void ForEachRegion(uint64_t from, uint64_t to, F&& f) {
+#ifdef _WIN32
   for (uint64_t a = from; a < to;) {
     MEMORY_BASIC_INFORMATION mbi;
     uint8_t* host = Host(uint32_t(a));
@@ -101,6 +120,16 @@ void ForEachRegion(uint64_t from, uint64_t to, F&& f) {
       if (!GuardedScan(f, uint32_t(a), host, size_t(end - a))) return;
     a = end;
   }
+#else
+  // macOS port: no VirtualQuery; walk the guest range in 16 MB chunks so one scan stays bounded.
+  for (uint64_t a = from; a < to;) {
+    const uint64_t end = std::min<uint64_t>(to, a + (16ull << 20));
+    uint8_t* host = Host(uint32_t(a));
+    if (!host) break;
+    if (!GuardedScan(f, uint32_t(a), host, size_t(end - a))) return;
+    a = end;
+  }
+#endif
 }
 
 // a name entry's text: 8-bit characters, or 16-bit big-endian ones (Gears of War 2006's TCHAR names), up to the 0
@@ -457,12 +486,18 @@ bool Readable(uint32_t address, uint32_t size) {
 // 0.6.0 review (as Gears3-Native's): the readable-page bitmap never forgets a page, so a page the game freed since it
 // was read still passes Readable; the write itself is caught like CopyRaw's read, and that page is asked about again.
 bool WriteRaw(void* dst, const void* src, size_t size) {
+#ifdef _WIN32
   __try {
     std::memcpy(dst, src, size);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
+#else
+  if (!dst || !src) return false;  // macOS port
+  std::memcpy(dst, src, size);
+  return true;
+#endif
 }
 
 void ForgetPage(uint32_t address) {

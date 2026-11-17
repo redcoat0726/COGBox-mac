@@ -133,8 +133,16 @@ void* OpenLoader() {
 #ifdef _WIN32
   return reinterpret_cast<void*>(LoadLibraryA("vulkan-1.dll"));
 #else
+#if defined(__APPLE__)
+  // macOS port: load the Vulkan loader. The driver is KosmicKrisp, chosen at launch through
+  // VK_DRIVER_FILES; no driver dylib is loaded directly here.
+  void* h = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+  if (h) return h;
+  return dlopen("@rpath/libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+#else
   void* h = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
   return h ? h : dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+#endif
 #endif
 }
 PFN_vkGetInstanceProcAddr LoaderEntry(void* lib) {
@@ -332,13 +340,31 @@ class VulkanBackend final : public Backend {
   bool CreateInstance(const BackendOptions& options, std::string& error) {
     // Debug labels when the loader offers them (RenderDoc, validation layers).
     std::vector<const char*> exts;
+#if defined(__APPLE__)
+    bool portability_enum = false;   // macOS port: see the flag below
+#endif
     {
       uint32_t n = 0;
       vk_.vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
       std::vector<VkExtensionProperties> e(n);
       vk_.vkEnumerateInstanceExtensionProperties(nullptr, &n, e.data());
-      for (const auto& x : e)
-        if (!std::strcmp(x.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) { exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME); debug_utils_ = true; }
+      for (const auto& x : e) {
+        if (!std::strcmp(x.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+          exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+          debug_utils_ = true;
+        }
+#if defined(__APPLE__)
+        // macOS port: some Vulkan drivers declare "is_portability_driver": true, which makes
+        // vkCreateInstance fail with VK_ERROR_INCOMPATIBLE_DRIVER (-9) unless the app asks for
+        // VK_KHR_portability_enumeration and sets VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR.
+        // Only enabled when the extension is actually advertised, so drivers that do not need it
+        // (including KosmicKrisp) are unaffected.
+        if (!std::strcmp(x.extensionName, "VK_KHR_portability_enumeration")) {
+          exts.push_back("VK_KHR_portability_enumeration");
+          portability_enum = true;
+        }
+#endif
+      }
     }
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "Gears-Native";
@@ -346,6 +372,9 @@ class VulkanBackend final : public Backend {
     app.apiVersion = VK_API_VERSION_1_4;  // the highest version we use (the loader / device may report less)
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
+#if defined(__APPLE__)
+    if (portability_enum) ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
     ici.enabledExtensionCount = uint32_t(exts.size());
     ici.ppEnabledExtensionNames = exts.data();
     const char* layer = "VK_LAYER_KHRONOS_validation";
@@ -1399,8 +1428,7 @@ class VulkanBackend final : public Backend {
       TextureView v;
       v.texture = th;
       v.plane = uint8_t(b.srv_plane[i]);
-      const auto dimension = textures_[th].desc.dimension == TextureDimension::k3D ? ViewDimension::k3D : ViewDimension::k2D;
-      imgs[binding] = {VK_NULL_HANDLE, SampledView(th, v, dimension), VK_IMAGE_LAYOUT_GENERAL};
+      imgs[binding] = {VK_NULL_HANDLE, SampledView(th, v, ViewDimension::k2D), VK_IMAGE_LAYOUT_GENERAL};
       if (!imgs[binding].imageView) { NotDone("Dispatch: image view creation failed"); return; }  // outside review
       wr.push_back({VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, binding, 0, 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &imgs[binding], nullptr, nullptr});
     }
@@ -1790,6 +1818,15 @@ class VulkanBackend final : public Backend {
       std::wstring name = pth.filename().wstring();
       const size_t at = name.find(L"d3d12");
       name = at != std::wstring::npos ? name.replace(at, 5, L"vulkan") : name + L".vulkan";
+      // Two Vulkan ICDs must not share a pipeline cache: data written by another driver can be loaded as valid and
+      // decode pixels with the wrong format. Key the file by the actual driver name.
+      uint64_t dh = 1469598103934665603ull;
+      for (unsigned char c : driver_name_) { dh ^= c; dh *= 1099511628211ull; }
+      wchar_t suffix[24];
+      std::swprintf(suffix, sizeof(suffix) / sizeof(suffix[0]), L"-%016llX", static_cast<unsigned long long>(dh));
+      const size_t dot = name.rfind(L'.');
+      name = (dot != std::wstring::npos ? name.substr(0, dot) : name) + suffix +
+             (dot != std::wstring::npos ? name.substr(dot) : L"");
       cache_path_ = pth.parent_path() / name;
     }
     std::vector<char> initial;
@@ -1997,6 +2034,7 @@ class VulkanBackend final : public Backend {
       cba[i].dstAlphaBlendFactor = b.enable ? Factor(b.dst_alpha) : VK_BLEND_FACTOR_ZERO;
       cba[i].alphaBlendOp = b.enable ? Op(b.op_alpha) : VK_BLEND_OP_ADD;
       cba[i].colorWriteMask = d.color_formats[i] == Format::kUnknown ? 0 : (d.color_write_masks[i] & 0xF);
+
       cf[i] = AttachmentFormat(d.color_formats[i], d.color_bits);
       if (cf[i] == VK_FORMAT_UNDEFINED) cba[i].colorWriteMask = 0;
       if (d.color_bits || IntegerFormat(cf[i])) cba[i].blendEnable = VK_FALSE;  // no blending on integer views
@@ -3500,7 +3538,13 @@ class VulkanBackend final : public Backend {
   // ---- GPU timestamps (patch 0077, as D3D12's jobs 176-177): a timestamp when GPU work of a new category starts, one
   // at the end of the list, summed by category when the list's submission completes (Retire). Each list owns a block
   // of kTsPerList queries, reset when the list begins (outside any rendering). ----
+#if defined(__APPLE__)
+  // Metal's counter heap rejects a pool larger than 4096 timestamps in total, and a refused pool means *no* GPU
+  // timing at all. Four lists of 1024 keep the whole-frame GPU time working on macOS.
+  static constexpr uint32_t kTsPerList = 1024, kTsLists = 4;
+#else
   static constexpr uint32_t kTsPerList = 4096, kTsLists = 32;  // patch 0101: 256 -> 4096 (a timestamp per draw)
+#endif
   struct TsList {
     uint64_t fence = 0;
     uint32_t block = 0, count = 0;

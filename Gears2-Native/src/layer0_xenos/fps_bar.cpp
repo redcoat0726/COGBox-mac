@@ -15,7 +15,10 @@
 #include <rex/ui/windowed_app_context.h>
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
+// macOS port: the ping readout needs the SDK's online patches (93), which this port's SDK does not carry.
+#ifdef _WIN32
 #include <rex/kernel/xam/net/online_startup.h>   // SDK patch 93 (Flippage 90): CurrentPing
+#endif
 
 #include <imgui.h>
 
@@ -94,7 +97,9 @@ class FpsBar final : public rex::ui::ImGuiDialog {
       window_swaps_ = swaps;
       window_shown_ = shown;
       window_generating_ = generating;
+#ifdef _WIN32
       if (show_ping_) ping_ = rex::kernel::xam::net::CurrentPing();   // twice a second is plenty
+#endif
     }
     char text[160];
     if (!show_fps_)
@@ -106,6 +111,7 @@ class FpsBar final : public rex::ui::ImGuiDialog {
       std::snprintf(text, sizeof(text), "%.0f FPS     %.1f ms     slowest %.1f ms", fps_, 1000.0 / fps_, shown_worst_);
     else
       std::snprintf(text, sizeof(text), "-- FPS");
+#ifdef _WIN32
     // SDK patch 93: the round trip to the host; as host, the worst among the players. Nothing when there is no online
     // session (offline, single player): a ping-only bar then is not drawn at all.
     if (show_ping_ && ping_.kind != rex::kernel::xam::net::PingView::None) {
@@ -122,6 +128,7 @@ class FpsBar final : public rex::ui::ImGuiDialog {
       const size_t used = std::strlen(text);
       std::snprintf(text + used, sizeof(text) - used, "%s%s", used ? "     " : "", ping);
     }
+#endif
     if (!text[0]) return;   // ping only, and no session to show it for
     const float scale = std::max(1.0f, io.DisplaySize.y / 1080.0f);  // readable at 1440p / 4K
     ImGui::SetNextWindowBgAlpha(0.45f);
@@ -148,7 +155,9 @@ class FpsBar final : public rex::ui::ImGuiDialog {
  private:
   bool top_;
   bool show_fps_, show_ping_;
+#ifdef _WIN32
   rex::kernel::xam::net::PingView ping_;
+#endif
   double fps_ = 0.0, shown_fps_ = 0.0, worst_ms_ = 0.0, shown_worst_ = 0.0;
   uint64_t last_swaps_ = 0, window_swaps_ = 0, window_shown_ = 0, window_generating_ = 0;
   std::chrono::steady_clock::time_point last_swap_time_{}, window_start_{};
@@ -350,7 +359,13 @@ void XenosCreateFpsBarIfRequested(rex::ui::ImGuiDrawer* drawer) {
     g_note_live.store(g_note.get(), std::memory_order_release);
   }
   const std::string where = REXCVAR_GET(gow2_fps_bar);
-  const bool fps = where == "top" || where == "bottom", ping = REXCVAR_GET(cogbox_show_ping);
+  const bool fps = where == "top" || where == "bottom";
+#ifdef _WIN32
+  const bool ping = REXCVAR_GET(cogbox_show_ping);
+#else
+  // macOS port: the ping readout needs the SDK's online patches (93), which this port's SDK does not carry.
+  const bool ping = false;
+#endif
   if (!drawer || (!fps && !ping)) return;   // ping alone: the same bar at the top, with just the ping
   XenosEnsureObserverHub();  // the swap count (with the SDK's GPU plugin it comes from the hub's observer)
   g_bar = std::make_unique<FpsBar>(drawer, where != "bottom", fps, ping);

@@ -44,7 +44,9 @@ class AchievementPopup final : public rex::ui::AchievementNotificationDialog {
   AchievementPopup(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate_drawer, rex::Runtime* runtime,
                    rex::ui::WindowedAppContext* ui);
   ~AchievementPopup() override;
+#ifdef _WIN32   // macOS port: see fps_bar.cpp - this override needs COGBox's SDK patch
   bool WantsContinuousPaint() const override { return false; }  // drawn with each game frame
+#endif
 
   // Any thread (guest threads included).
   void Push(const rex::system::AchievementEvent& event) override;

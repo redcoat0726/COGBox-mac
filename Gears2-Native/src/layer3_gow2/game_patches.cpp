@@ -44,7 +44,16 @@
 #include <chrono>
 #include <mutex>
 #include <thread>
+// macOS port: <immintrin.h> is x86-only and refuses to compile on arm64. The only thing taken from
+// it is _mm_pause, the spin-wait hint - ARM has its own.
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#define GOW2_CPU_PAUSE() _mm_pause()
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define GOW2_CPU_PAUSE() __asm__ __volatile__("yield")
+#else
+#define GOW2_CPU_PAUSE() ((void)0)
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -157,26 +166,54 @@ void Gow2NoteTextureDefrag() {
 // Job 225: one step of a wait for the GPU. Steps less than 200 us apart belong to the same wait; its first 64 steps
 // only pause (short waits stay fast), later ones sleep until our GPU side writes guest memory (a fence, the read
 // pointer, a query report - XenosNotifyGuestWrite) or 1 ms.
+// macOS port: the three Win32 primitives this file needs have standard equivalents. They stay as
+// wrappers so the Windows build keeps using QPC (it is what the tuning in the notes was measured on).
+namespace {
+inline uint64_t TickFreq() {
+#if defined(_WIN32)
+  LARGE_INTEGER f;
+  QueryPerformanceFrequency(&f);
+  return uint64_t(f.QuadPart);
+#else
+  return uint64_t(std::chrono::steady_clock::period::den / std::chrono::steady_clock::period::num);
+#endif
+}
+inline uint64_t NowTicks() {
+#if defined(_WIN32)
+  LARGE_INTEGER n;
+  QueryPerformanceCounter(&n);
+  return uint64_t(n.QuadPart);
+#else
+  return uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
+inline void YieldThread() {
+#if defined(_WIN32)
+  SwitchToThread();
+#else
+  std::this_thread::yield();
+#endif
+}
+}  // namespace
+
 struct Gow2WaitStreak {
   uint64_t last_qpc = 0;
   uint32_t count = 0;
   uint32_t write_seq = 0;
 };
 static void Gow2SleepStep(Gow2WaitStreak& w, uint32_t quick_steps = 64) {
-  static const uint64_t freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return uint64_t(f.QuadPart); }();
-  LARGE_INTEGER now;
-  QueryPerformanceCounter(&now);
-  if (uint64_t(now.QuadPart) - w.last_qpc > freq / 5000) w.count = 0;
+  const uint64_t freq = TickFreq();
+  const uint64_t now = NowTicks();
+  if (now - w.last_qpc > freq / 5000) w.count = 0;
   if (++w.count <= quick_steps) {
-    for (int i = 0; i < 32; ++i) _mm_pause();
+    for (int i = 0; i < 32; ++i) GOW2_CPU_PAUSE();
   } else {
     // This sequence was sampled before the guest's preceding completion check.
     // Sampling here can miss a completion between that check and this wait.
     XenosWaitGuestWrite(w.write_seq, 1);
   }
   w.write_seq = XenosGuestWriteSeq();
-  QueryPerformanceCounter(&now);
-  w.last_qpc = uint64_t(now.QuadPart);
+  w.last_qpc = NowTicks();
 }
 
 // Job 178: the title's render thread polls the GPU (a D3D query's GetData, sub_829783A8, called in a loop by
@@ -185,9 +222,9 @@ static void Gow2SleepStep(Gow2WaitStreak& w, uint32_t quick_steps = 64) {
 void Gow2QueryPollYield() {
   const int mode = REXCVAR_GET(gow2_patch_query_poll_yield);
   if (mode == 1) {
-    for (int i = 0; i < 32; ++i) _mm_pause();
+    for (int i = 0; i < 32; ++i) GOW2_CPU_PAUSE();
   } else if (mode == 2) {
-    SwitchToThread();
+    YieldThread();
   } else if (mode == 3) {
     thread_local Gow2WaitStreak streak;
     Gow2SleepStep(streak);
@@ -311,11 +348,17 @@ inline double ParseAspect(const std::string& v) {
   return 0.0;
 }
 inline double MonitorAspect() {
+#if defined(_WIN32)
   MONITORINFO mi{sizeof(mi)};
   HMONITOR m = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
   if (!m || !GetMonitorInfoW(m, &mi)) return 0.0;
   const double w = double(mi.rcMonitor.right - mi.rcMonitor.left), h = double(mi.rcMonitor.bottom - mi.rcMonitor.top);
   return h > 0 ? w / h : 0.0;
+#else
+  // macOS port: not implemented, so --gow2_aspect=auto reports "unknown" and Height() falls back to
+  // Canary's 550 rows - the shape the notes record as working everywhere. A fixed --gow2_aspect works.
+  return 0.0;
+#endif
 }
 // 550 = Canary's shape; another height when --gow2_aspect asks for one
 inline uint32_t Height(const std::string& v, const char* tag) {
@@ -762,13 +805,25 @@ bool Gow2LooksLocalized(std::string_view path) {
 // track IDs, sample rate, stereo), so a Japanese player's log shows whether a Japanese track is in the file and which ID
 // it has; picking it needs that ID and the address of this build's Bink track choice (BinkSetSoundTrack / the BinkOpen
 // track flag), which nobody has yet. Header layout as FFmpeg's Bink demuxer reads it (little-endian).
+// macOS port: _wfopen exists because filesystem::path::c_str() is wchar_t on Windows and char
+// everywhere else - one helper keeps the call site free of the split.
+namespace {
+inline FILE* OpenRead(const std::filesystem::path& p) {
+#if defined(_WIN32)
+  return _wfopen(p.c_str(), L"rb");
+#else
+  return std::fopen(p.c_str(), "rb");
+#endif
+}
+}  // namespace
+
 void Gow2LogBinkTracks(std::string_view guest_path, const std::filesystem::path* host_path) {
   static std::atomic<int> lines{0};
   if (!host_path || lines.fetch_add(1, std::memory_order_relaxed) >= 40) return;
   auto le32 = [](const uint8_t* p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; };
   uint8_t h[256] = {};
   size_t got = 0;
-  if (FILE* fp = _wfopen(host_path->c_str(), L"rb")) {
+  if (FILE* fp = OpenRead(*host_path)) {
     got = std::fread(h, 1, sizeof(h), fp);
     std::fclose(fp);
   }

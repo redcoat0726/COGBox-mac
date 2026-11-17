@@ -24,7 +24,9 @@
 #include <rex/system/xthread.h>
 #include <rex/system/xvideo.h>
 #include <rex/thread.h>
+#ifdef _WIN32
 #include <rex/ui/d3d12/d3d12_provider.h>
+#endif
 // SDK Vulkan classes: the SDK built with REXGLUE_USE_VULKAN, and renderdoc_app.h reachable (rex/ui/vulkan/instance.h
 // includes it; job 375: rex::runtime doesn't pass that include folder on, CMakeLists links rex::renderdoc for it).
 #if defined(REX_HAS_VULKAN) && REX_HAS_VULKAN && __has_include(<renderdoc_app.h>)
@@ -43,6 +45,8 @@
 #include <windows.h>  // MonitorFromWindow (xenos/display_size.h)
 #include <dxgi.h>     // GitHub #304: the graphics card choice (DXGI adapters, loaded at run time)
 #include <d3d12.h>    // GitHub #304: which cards run DirectX 12, and which share the CPU's memory (UMA)
+#else
+#include <dlfcn.h>    // macOS port: the Vulkan loader is opened at run time
 #endif
 
 #include <algorithm>
@@ -118,6 +122,7 @@ class OurGpuSystem final : public rex::system::IGraphicsSystem {
                   "renderdoc_app.h not found): the window uses D3D12 and our Vulkan picture is not shown");
 #endif
     }
+#ifdef _WIN32
     EnableDred();
     bool set_adapter = false;
     if (card.ok && !PlayerSet("d3d12_adapter")) {   // GitHub #304, unless the player set --d3d12_adapter
@@ -134,6 +139,13 @@ class OurGpuSystem final : public rex::system::IGraphicsSystem {
     if (set_adapter) rex::cvar::SetFlagByName("d3d12_adapter", "-1");
     provider_api_ = "D3D12";
     return provider_ != nullptr;
+#else
+    // macOS port: D3D12 does not exist here, so Vulkan (KosmicKrisp) is the only window provider.
+    // The caller already logged why it got no Vulkan provider.
+    EnableDred();
+    provider_api_ = "Vulkan";
+    return false;
+#endif
   }
   const char* provider_api_ = "D3D12";
 
@@ -261,9 +273,17 @@ class OurGpuSystem final : public rex::system::IGraphicsSystem {
   void PreferDiscreteVulkanDevice() {
 #if GN_SDK_VULKAN
     if (PlayerSet("vulkan_device")) return;   // the player's choice
+#ifdef _WIN32
     HMODULE lib = LoadLibraryW(L"vulkan-1.dll");
     if (!lib) return;
     auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(lib, "vkGetInstanceProcAddr"));
+#else
+    // macOS port: probe through the Vulkan loader. The ICD is KosmicKrisp, selected at launch
+    // via VK_DRIVER_FILES; no driver dylib is probed directly.
+    void* lib = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) return;
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"));
+#endif
     auto create = gipa ? reinterpret_cast<PFN_vkCreateInstance>(gipa(nullptr, "vkCreateInstance")) : nullptr;
     VkInstance inst = VK_NULL_HANDLE;
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -293,7 +313,11 @@ class OurGpuSystem final : public rex::system::IGraphicsSystem {
       }
       if (destroy) destroy(inst, nullptr);
     }
+#ifdef _WIN32
     FreeLibrary(lib);
+#else
+    dlclose(lib);
+#endif
 #endif
   }
 
@@ -341,7 +365,7 @@ class OurGpuSystem final : public rex::system::IGraphicsSystem {
 
   // GitHub #304: the Vulkan device with the chosen DXGI adapter's LUID (VkPhysicalDeviceIDProperties, Vulkan 1.1).
   bool UseVulkanDeviceByLuid(const ChosenCard& card) {
-#if GN_SDK_VULKAN
+#if GN_SDK_VULKAN && defined(_WIN32)
     if (PlayerSet("vulkan_device")) return true;   // the player's choice
     HMODULE lib = LoadLibraryW(L"vulkan-1.dll");
     if (!lib) return false;

@@ -10,10 +10,14 @@
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32   // macOS port: DXGI adapter enumeration is Windows-only
 #include <windows.h>
 #include <dxgi.h>
+#endif
 #if !defined(_M_ARM64)
+#if defined(__x86_64__) || defined(_M_X64)
 #include <intrin.h>
+#endif
 #endif
 
 #if !defined(_M_ARM64)

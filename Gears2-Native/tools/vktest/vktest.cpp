@@ -61,7 +61,13 @@ static void ExternalDeviceCheck() {
   void* lib = reinterpret_cast<void*>(LoadLibraryA("vulkan-1.dll"));
   auto gipa = lib ? reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(reinterpret_cast<HMODULE>(lib), "vkGetInstanceProcAddr")) : nullptr;
 #else
+#if defined(__APPLE__)
+  // macOS port: the loader the SDK ships is libvulkan.1.dylib. The driver comes from
+  // VK_DRIVER_FILES (KosmicKrisp), not from a dylib opened here.
+  void* lib = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+#else
   void* lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
   auto gipa = lib ? reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr")) : nullptr;
 #endif
   CHECK(gipa != nullptr, "V3: loader");
@@ -72,6 +78,13 @@ static void ExternalDeviceCheck() {
   app.apiVersion = VK_API_VERSION_1_4;
   VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   ici.pApplicationInfo = &app;
+#if defined(__APPLE__)
+  // macOS port: same requirement as the backend's own instance - a portability ICD needs the extension and the flag.
+  const char* port_ext = "VK_KHR_portability_enumeration";
+  ici.enabledExtensionCount = 1;
+  ici.ppEnabledExtensionNames = &port_ext;
+  ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
   VkInstance inst = VK_NULL_HANDLE;
   CHECK(vkCreateInstance(&ici, nullptr, &inst) == VK_SUCCESS, "V3: instance");
   if (!inst) return;

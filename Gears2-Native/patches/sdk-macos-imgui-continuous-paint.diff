@@ -1,0 +1,40 @@
+--- a/include/rex/ui/imgui_dialog.h
++++ b/include/rex/ui/imgui_dialog.h
+@@ -28,6 +28,12 @@
+  public:
+   virtual ~ImGuiDialog();
+ 
++  // macOS port / COGBox SDK patch 42: a dialog that is drawn with every game frame does not
++  // need the presenter to repaint at the monitor's rate. The drawer only requests an extra
++  // UI paint when at least one attached dialog returns true here. Defaults to true so menus
++  // and other interactive overlays keep their existing behaviour.
++  virtual bool WantsContinuousPaint() const { return true; }
++
+   // Shows a simple message box containing a text message.
+   // Callers can want for the dialog to close with Wait().
+   // Dialogs retain themselves and will delete themselves when closed.
+--- a/src/ui/imgui_drawer.cpp
++++ b/src/ui/imgui_drawer.cpp
+@@ -437,9 +437,19 @@
+   DetachIfLastDialogRemoved();
+ 
+   if (!dialogs_.empty()) {
+-    // Repaint (and handle input) continuously if still active. In detached mode
+-    // there is no presenter; the app drives repaint via its own present loop.
+-    if (presenter_) {
++    // Repaint (and handle input) continuously if a dialog actually asks for it.
++    // Dialogs drawn with each game frame (the FPS bar, the shader note) return false from
++    // WantsContinuousPaint(); requesting a repaint for them made the presenter repaint at
++    // the monitor's rate and fight the frame cap / V-Sync pacing (COGBox patch 42).
++    // In detached mode there is no presenter; the app drives its own present loop.
++    bool wants_paint = false;
++    for (ImGuiDialog* dialog : dialogs_) {
++      if (dialog->WantsContinuousPaint()) {
++        wants_paint = true;
++        break;
++      }
++    }
++    if (presenter_ && wants_paint) {
+       presenter_->RequestUIPaintFromUIThread();
+     }
+   }

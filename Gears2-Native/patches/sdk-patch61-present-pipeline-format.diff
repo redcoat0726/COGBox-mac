@@ -1,0 +1,81 @@
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -10,6 +10,9 @@
+  */
+ 
+ #include <algorithm>
++#include <cstdio>
++#include <chrono>
++#include <filesystem>
+ #include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+@@ -58,6 +61,30 @@
+ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
+                     "Allow FIFO relaxed present mode");
+ 
++
++// macOS port diagnostic: a file trace of the presenter's swapchain and paint-pipeline events. The presenter stalls in
++// Metal shader compilation inside PaintAndPresentImpl - REXLOG goes to the in-game console there, which nobody can read
++// in a frozen game, so these go to <cwd>/logs/present-trace.log and survive the freeze.
++REXCVAR_DEFINE_BOOL(gow2_present_trace, false, "UI/Presenter",
++                     "Write every swapchain format change, paint-pipeline creation and paint start to "
++                     "logs/present-trace.log with a millisecond timestamp. Off by default: a line and a flush a frame "
++                     "cost more than they are worth until a stall is being chased");
++static void PresentTrace(const char* what, unsigned a = 0, unsigned b = 0) {
++  if (!REXCVAR_GET(gow2_present_trace)) return;
++  static FILE* f = [] {
++    std::error_code ec;
++    const std::filesystem::path dir = std::filesystem::current_path() / "logs";
++    std::filesystem::create_directories(dir, ec);
++    return std::fopen((dir / "present-trace.log").string().c_str(), "a");
++  }();
++  if (!f) return;
++  static const auto origin = std::chrono::steady_clock::now();
++  const auto ms =
++      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - origin).count();
++  std::fprintf(f, "%lld %s %u %u\n", (long long)ms, what, a, b);
++  std::fflush(f);
++}
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -891,6 +918,8 @@
+ 
+   // Update the render pass to the new format.
+   if (paint_context_.swapchain_render_pass_format != new_swapchain_format) {
++    PresentTrace("render-pass-format-changed", unsigned(new_swapchain_format),
++                 unsigned(paint_context_.swapchain_render_pass_format));
+     util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device,
+                                paint_context_.swapchain_render_pass);
+     paint_context_.swapchain_render_pass_format = new_swapchain_format;
+@@ -1529,6 +1558,7 @@
+ }
+ 
+ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
++  PresentTrace("paint-begin");
+   // Begin the submission in place of the one not currently potentially used on
+   // the GPU.
+   uint64_t current_paint_submission_index =
+@@ -1838,6 +1868,12 @@
+             assert_true(guest_output_paint_fs_[size_t(swapchain_effect)] != VK_NULL_HANDLE);
+             swapchain_effect_pipeline.swapchain_pipeline = CreateGuestOutputPaintPipeline(
+                 swapchain_effect, paint_context_.swapchain_render_pass);
++            // macOS port fix: remember which format the pipeline was built for. Without this the field keeps its
++            // initial value, so the check above sees "format changed" on every paint, destroys the pipeline and
++            // builds it again - 494 builds in 497 paints here - and every build is a synchronous Metal shader
++            // compile on the UI thread. That is the long, random freeze: the game is fine, the presenter is
++            // recompiling.
++            swapchain_effect_pipeline.swapchain_format = paint_context_.swapchain_render_pass_format;
+             if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
+               guest_output_flow.effect_count = 0;
+             }
+@@ -2572,6 +2608,7 @@
+ 
+ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffect effect,
+                                                            VkRenderPass render_pass) {
++  PresentTrace("paint-pipeline-create", unsigned(effect), unsigned(uintptr_t(render_pass) & 0xFFFF));
+   VkPipelineShaderStageCreateInfo stages[2] = {};
+   for (uint32_t i = 0; i < 2; ++i) {
+     VkPipelineShaderStageCreateInfo& stage = stages[i];

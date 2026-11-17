@@ -29,7 +29,9 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>

@@ -7,14 +7,148 @@
 // Arguments are the S3.3 pinned set (notes/39): -E main -HV 2021 -Gis -denorm ftz, Shader Model 6.6; SPIR-V adds
 // -spirv -fspv-target-env=vulkan1.3 (Vulkan backend, later). Our code (MIT).
 #include <xenos/renderer/shader_cache.h>
+#include <atomic>
+#include <filesystem>
 
 #ifndef _WIN32
 
+// macOS / Linux: the same DXC, driven through its command line instead of the COM API. dxcapi.h needs the COM
+// base interfaces (IUnknown, HRESULT), which do not exist off Windows, and this port only compiles a handful of
+// built-in shaders at start-up - one process each is far simpler than re-creating the COM plumbing.
+//   --gow2_dxc_dir=<dir>  looks for <dir>/dxc, <dir>/bin/dxc, <dir>/dxcompiler
+//   empty                 looks next to the executable, then in ./third_party/dxc-macos/bin
+#include <unistd.h>
+
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
 namespace xenos::renderer {
-std::unique_ptr<ShaderCompiler> CreateDxcCompiler(const std::filesystem::path&, std::string& error) {
-  error = "DXC in-process is only wired up on Windows";
+namespace {
+
+std::string ShellQuote(const std::string& s) {
+  std::string out = "'";
+  for (char c : s) {
+    if (c == '\'') out += "'\\''";
+    else out += c;
+  }
+  out += "'";
+  return out;
+}
+
+const char* ProfileOf(gpu::ShaderStage stage) {
+  switch (stage) {
+    case gpu::ShaderStage::kVertex: return "vs_6_6";
+    case gpu::ShaderStage::kPixel: return "ps_6_6";
+    case gpu::ShaderStage::kGeometry: return "gs_6_6";
+    default: return "cs_6_6";
+  }
+}
+
+class DxcCliCompiler final : public ShaderCompiler {
+ public:
+  DxcCliCompiler(std::string exe, std::string version) : exe_(std::move(exe)), version_(std::move(version)) {}
+
+  std::string Describe() const override { return "DXC " + version_ + " (command line)"; }
+
+  std::string CacheTag(gpu::ShaderIL il) const override {
+    return "dxc-cli " + version_ +
+           (il == gpu::ShaderIL::kDxil ? " -HV 2021 -Gis -denorm ftz sm6.6"
+                                       : " -HV 2021 -Gis -spirv vulkan1.3 sm6.6 shifts b0 t100 s200 u300 unkfmt");
+  }
+
+  bool Compile(const std::string& hlsl, gpu::ShaderStage stage, gpu::ShaderIL il, std::vector<uint8_t>& out,
+               std::string& messages) override {
+    static std::atomic<uint32_t> seq{0};
+    const std::string base = (std::filesystem::temp_directory_path() /
+                              ("gow2dxc-" + std::to_string(::getpid()) + "-" + std::to_string(seq.fetch_add(1))))
+                                 .string();
+    const std::string src = base + ".hlsl";
+    const std::string dst = base + (il == gpu::ShaderIL::kDxil ? ".dxil" : ".spv");
+    const std::string err = base + ".txt";
+    {
+      FILE* f = std::fopen(src.c_str(), "wb");
+      if (!f) {
+        messages = "cannot write " + src;
+        return false;
+      }
+      std::fwrite(hlsl.data(), 1, hlsl.size(), f);
+      std::fclose(f);
+    }
+    std::string cmd = ShellQuote(exe_) + " -T " + ProfileOf(stage) + " -E main -HV 2021 -Gis";
+    if (il == gpu::ShaderIL::kDxil) {
+      cmd += " -denorm ftz";
+    } else {
+      cmd += " -spirv -fspv-target-env=vulkan1.3 -fspv-use-unknown-image-format"
+             " -fvk-b-shift 0 0 -fvk-t-shift 100 0 -fvk-s-shift 200 0 -fvk-u-shift 300 0";
+    }
+    cmd += " -Fo " + ShellQuote(dst) + " " + ShellQuote(src) + " > " + ShellQuote(err) + " 2>&1";
+    const int rc = std::system(cmd.c_str());
+    {
+      FILE* f = std::fopen(err.c_str(), "rb");
+      if (f) {
+        std::array<char, 4096> buf{};
+        const size_t n = std::fread(buf.data(), 1, buf.size() - 1, f);
+        messages.assign(buf.data(), n);
+        std::fclose(f);
+      }
+    }
+    bool ok = false;
+    if (rc == 0) {
+      if (FILE* f = std::fopen(dst.c_str(), "rb")) {
+        std::fseek(f, 0, SEEK_END);
+        const long size = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (size > 0) {
+          out.resize(size_t(size));
+          ok = std::fread(out.data(), 1, size_t(size), f) == size_t(size);
+        }
+        std::fclose(f);
+      }
+    }
+    std::remove(src.c_str());
+    std::remove(dst.c_str());
+    std::remove(err.c_str());
+    if (!ok && messages.empty()) messages = "dxc exited with " + std::to_string(rc);
+    return ok;
+  }
+
+ private:
+  std::string exe_;
+  std::string version_;
+};
+
+bool FileExists(const std::filesystem::path& p) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(p, ec);
+}
+
+}  // namespace
+
+std::unique_ptr<ShaderCompiler> CreateDxcCompiler(const std::filesystem::path& dir, std::string& error) {
+  std::vector<std::filesystem::path> candidates;
+  if (!dir.empty()) {
+    candidates.push_back(dir / "dxc");
+    candidates.push_back(dir / "bin" / "dxc");
+  }
+  std::error_code ec;
+  const auto exe_dir = std::filesystem::current_path(ec);
+  candidates.push_back(exe_dir / "dxc");
+  candidates.push_back(exe_dir / "third_party" / "dxc-macos" / "bin" / "dxc");
+  candidates.push_back(exe_dir / ".." / ".." / "third_party" / "dxc-macos" / "bin" / "dxc");
+  for (const auto& c : candidates) {
+    if (FileExists(c)) {
+      return std::make_unique<DxcCliCompiler>(c.string(), "1.9.2607");
+    }
+  }
+  error = "dxc not found (looked in " + (dir.empty() ? std::string("the working directory") : dir.string()) +
+          "); put the macOS dxc build in third_party/dxc-macos/bin or pass --gow2_dxc_dir";
   return nullptr;
 }
+
 }  // namespace xenos::renderer
 
 #else

@@ -42,7 +42,10 @@
 #include <thread>
 #include <vector>
 
+// macOS/arm64 port: <immintrin.h> is x86-only; _mm_pause comes from x86_compat.h.
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif

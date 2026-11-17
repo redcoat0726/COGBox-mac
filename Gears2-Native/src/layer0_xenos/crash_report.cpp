@@ -35,9 +35,11 @@
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32   // macOS port: minidumps and dbghelp do not exist here
 #include <windows.h>
 #include <winternl.h>
 #include <dbghelp.h>
+#endif
 
 REXCVAR_DEFINE_STRING(gow2_crash_dir, "", "Gears2", "Folder for crash reports (default: <exe dir>\\crashes)");
 REXCVAR_DEFINE_INT32(gow2_crash_stack_guarantee_kb, 32, "Gears2",

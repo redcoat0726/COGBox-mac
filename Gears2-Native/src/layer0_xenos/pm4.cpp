@@ -5,6 +5,7 @@
 
 #include <bit>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 

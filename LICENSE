@@ -19,3 +19,29 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+This project contains code from other projects, each under its own licence:
+
+  Gears2-Native/cogbox/src/x360fs.cpp, .h  (compiled from the upstream tree, unmodified)
+      COGBox, Copyright (c) 2026 Shagg - MIT (unmodified)
+  Gears2-Native/ (a clone of our fork of COGBox, COGBox-mac,
+  based on the 0.6.1 release, with macOS modifications by this project)
+      COGBox, Copyright (c) 2026 Shagg - MIT. The upstream LICENSE and
+      THIRD_PARTY_NOTICES.md inside that directory are kept verbatim and
+      list its BSD-3-Clause / MIT / OFL / CC0 third-party components.
+      Our macOS modifications are tracked in this repository's git history.
+  Gears2-Native/patches/rexglue-sdk.diff (upstream's SDK patch;
+  applied to the SDK, the SDK itself is not distributed)
+      COGBox, Copyright (c) 2026 Shagg - MIT
+  Gears2-Native/port-shim/stb_image_write.h
+      stb_image_write, Sean Barrett et al. - MIT / public domain
+
+  Upstream project: COGBox by Shagg - https://github.com/Shagg88/COGBox
+  This repository is an unofficial macOS fork; it is not affiliated with
+  the upstream author.
+
+  Built against, but not distributed with, the rexglue SDK (BSD-3-Clause)
+  and MoltenVK (Apache-2.0). Neither is included in this repository.
+  No game data, game images or recompiled game code are included.

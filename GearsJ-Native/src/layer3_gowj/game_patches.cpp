@@ -36,7 +36,10 @@
 #include <thread>
 #include <vector>
 
+// macOS/arm64 port: <immintrin.h> is x86-only; _mm_pause comes from x86_compat.h.
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -862,11 +865,16 @@ inline double ParseAspect(const std::string& v) {
   return 0.0;
 }
 inline double MonitorAspect() {
+#ifdef _WIN32
   MONITORINFO mi{sizeof(mi)};
   HMONITOR m = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
   if (!m || !GetMonitorInfoW(m, &mi)) return 0.0;
   const double w = double(mi.rcMonitor.right - mi.rcMonitor.left), h = double(mi.rcMonitor.bottom - mi.rcMonitor.top);
   return h > 0 ? w / h : 0.0;
+#else
+  // macOS port: no Win32 monitor API; fall back to the built-in shape.
+  return 0.0;
+#endif
 }
 // 550 = Canary's shape; another height when --gowj_aspect asks for one
 inline uint32_t Height(const std::string& v, const char* tag) {
@@ -953,13 +961,17 @@ void GowjApplyUltrawideIfRequested(rex::Runtime* runtime) {
       REXLOG_WARN("gowj_ultrawide: aspect float {:08X} is {}, not 16:9 - not changed", addr, old_value);
       continue;
     }
+#ifdef _WIN32
     DWORD old_protect = 0;
     if (!VirtualProtect(p, 4, PAGE_READWRITE, &old_protect)) {
       REXLOG_WARN("gowj_ultrawide: aspect float {:08X} could not be unlocked - not changed", addr);
       continue;
     }
+#endif
     for (int i = 0; i < 4; ++i) p[i] = uint8_t(bits >> (24 - 8 * i));
+#ifdef _WIN32
     VirtualProtect(p, 4, old_protect, &old_protect);
+#endif
     REXLOG_INFO("gowj_ultrawide: aspect float {:08X} {} -> {}", addr, old_value, value);
   }
   const bool a = rex::cvar::SetFlagByName("gow2_present_frame_aspect", "true");
