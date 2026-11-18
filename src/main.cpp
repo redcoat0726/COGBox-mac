@@ -723,8 +723,6 @@ static NativeLaunch native_launch(const fs::path &repo, const std::string &key) 
               "--host_present_from_non_ui_thread=false",
               // Gears 2: the EDRAM ownership workaround verified on the title screen (see port/run_gow2.sh).
               "--gow2_renderer_fill_ownership=false",
-              // Renderer transfers are off by default for every port (the cvar is shared layer 0).
-              "--gow2_renderer_transfers=false",
               // Gears 2 waits for every second vertical blank (30 Hz on a 60 Hz display), so presenting in
               // FIFO mode caps it at 30 no matter the hardware. Off = the emulated vblank runs at 1000 Hz.
               // The launcher's V-Sync control overrides this with --gow2_gpu_vsync=true.
@@ -760,8 +758,6 @@ static NativeLaunch native_launch(const fs::path &repo, const std::string &key) 
               "--gow2_shader_cache_dir=out/userdata/cache",
               "--gow2_dxc_dir=" + dxc,
               "--host_present_from_non_ui_thread=false",
-              // Renderer transfers are off by default for every port (the cvar is shared layer 0).
-              "--gow2_renderer_transfers=false",
               "--mnk_mode=true",
               "--mnk_mouse=true"};
   } else if (key == "gears3") {
@@ -776,8 +772,6 @@ static NativeLaunch native_launch(const fs::path &repo, const std::string &key) 
               "--gow2_shader_cache_dir=out/userdata/cache",
               "--gow2_dxc_dir=" + dxc,
               "--host_present_from_non_ui_thread=false",
-              // Renderer transfers are off by default for every port (the cvar is shared layer 0).
-              "--gow2_renderer_transfers=false",
               "--mnk_mode=true",
               "--mnk_mouse=true"};
   }
