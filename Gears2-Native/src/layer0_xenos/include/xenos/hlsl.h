@@ -20,6 +20,8 @@
 
 namespace xenos::hlsl {
 
+// 0.6.5: every field is part of the DXBC store's key - a new field must also go into ShaderCache::DxbcStoreKey
+// (shader_cache.cpp), or a stored translation made with the other value could be used.
 struct HlslOptions {
   // Patch 0059 (DXBC back end only - the HLSL path ignores these; all off = the 0055 output, unchanged):
   // dxbc_loop_only_if_needed: a straight-line shader is wrapped in a one-pass loop only when it has a conditional
@@ -113,6 +115,12 @@ struct HlslOptions {
   // Pixel b0 vector 5 holds (peak / scene white, UI white / scene white, 0, 0).
   bool native_hdr_linear = false;
   bool native_hdr_ui = false;
+  // A dimensionless scene modulation factor: bounded linear RGB, with no
+  // UI-white gain or scene highlight shoulder.
+  bool native_hdr_modulation = false;
+  bool native_hdr_modulation_x2 = false;
+  bool native_hdr_premultiplied = false;
+  bool native_hdr_filter = false; // verified single-input blur, RGB lower clamp only; original alpha
 };
 
 // Patch 0105: the two dwords per fetch slot that tex_post_constants shaders read (fetch = the slot's 6 fetch-constant

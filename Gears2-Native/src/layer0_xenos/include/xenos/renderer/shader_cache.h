@@ -39,6 +39,7 @@
 #include <vector>
 
 #include <xenos/hlsl.h>
+#include <xenos/renderer/hdr_overlay.h>
 #include <xenos/renderer/gpu.h>
 #include <xenos/ucode.h>
 
@@ -189,6 +190,12 @@ class ShaderCache {
   // Exact Gears 2 scene / Canvas profile, a DXBC twin for float HDR composition.
   // Does not replace the guest's normal shader or change its constant layout.
   gpu::ShaderHandle GetNativeHdr(uint64_t hash, const uint32_t* dwords, size_t count, bool canvas_material = false);
+  const GuestShader& GetNativeOverlay(uint64_t hash, const uint32_t* dwords, size_t count,
+                                      native_hdr::OverlayMode mode, bool warm = false);
+  void SetPrepareNativeUi(bool on) { prepare_native_ui_ = on; }
+  void SetPrepareNativeEffects(bool on) { prepare_native_effects_ = on; }
+  void SetPrepareNativeJudgment(bool on) { prepare_native_judgment_ = on; }
+  gpu::ShaderHandle GetJudgmentFxaaPair(uint64_t hash,const uint32_t* dwords,size_t count);
   gpu::ShaderHandle GetNativeSceneUi(const uint32_t* dwords, size_t count);
   // True when `s` is no longer pending (ready or failed) on return; waits at most budget_ms.
   bool WaitReady(const GuestShader& s, double budget_ms);
@@ -215,6 +222,13 @@ class ShaderCache {
   // and not at every launch (Gears 3: 31.6 s of conversion for 8,974 shaders, more with the optimiser). `switches` =
   // every setting that changes the words (discard form, float controls, optimiser on). Empty dir = no store.
   static void SetSpirvStore(const std::filesystem::path& dir, uint32_t switches);
+  // 0.6.5: translated DXBC (and the metadata the renderer reads from it) kept in <dir>\dxbc-store.bin, so a start-up
+  // translates each recorded shader once per build and not at every launch (Gears 3: 9,296 shaders, 14 s of CPU).
+  // Empty dir = no store. DxbcStoreKey: 0 = not stored (no store, or no ucode words).
+  static void SetDxbcStore(const std::filesystem::path& dir);
+  static uint64_t DxbcStoreKey(const uint32_t* dwords, size_t dword_count, bool is_vertex, const ucode::DecodeOptions& d,
+                               const hlsl::HlslOptions& o);
+  static void DxbcStoreCounts(uint64_t* hits, uint64_t* misses, uint64_t* stored);
   void SetTexNumFormat(bool on) { tex_num_format_ = on; }  // patch 0040
   void SetTexPostConstants(bool on) { tex_post_constants_ = on; }  // patch 0105
   void SetTexPostAffine(bool on) { tex_post_affine_ = on; }        // job 634
@@ -255,6 +269,10 @@ class ShaderCache {
     std::vector<uint8_t> bytecode;
     std::string messages;
     double ms = 0.0;
+    bool overlay_job = false, overlay_warm = false;
+    std::vector<uint32_t> overlay_dwords;
+    hlsl::HlslOptions overlay_options;
+    ucode::DecodeOptions overlay_decode;
     bool spirv_job = false;      // 0.6.2: bytecode holds DXBC going in and SPIR-V words coming out (SpvWorker)
     bool spirv_precise = false;
     bool spirv_urgent = false;   // a draw waits for it: converted only (no optimiser, not stored) - 45 ms, not ~200
@@ -288,6 +306,11 @@ class ShaderCache {
   std::unordered_map<uint64_t, std::unique_ptr<GuestShader>> shaders_[2];  // [vertex]
   std::unordered_map<std::string, gpu::ShaderHandle> builtins_;
   std::unordered_map<uint64_t, gpu::ShaderHandle> native_hdr_shaders_;
+  std::unordered_map<uint64_t, std::unordered_map<uint8_t, std::unique_ptr<GuestShader>>> native_hdr_overlays_;
+  bool prepare_native_ui_ = false;
+  bool prepare_native_effects_ = false;
+  bool prepare_native_judgment_ = false;
+  std::unordered_map<uint64_t,gpu::ShaderHandle> judgment_fxaa_pairs_;
   ShaderCacheStats stats_;
   bool compact_float_constants_ = false;
   bool tex_sign_by_swizzle_ = false;  // patch 0024
@@ -316,6 +339,10 @@ class ShaderCache {
   std::condition_variable spv_wake_;
   uint32_t spv_warm_limit_ = UINT32_MAX, spv_warm_active_ = 0;  // under mutex_
   std::vector<std::thread> spv_workers_;
+  // 0.6.5 (job 1991): while the warm-up's own workers run, warm SPIR-V jobs only queue - the background threads start
+  // when it ends (or at once for a live job), as before the streaming adoption. Under mutex_.
+  bool spv_hold_ = false;
+  void StartSpvWorkersLocked();
   uint64_t spv_jobs_done_ = 0, spv_jobs_failed_ = 0;
   double poll_spent_ms_ = 0.0;
   double spv_jobs_ms_ = 0.0;

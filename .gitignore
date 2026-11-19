@@ -68,3 +68,4 @@ tools/*.7z
 *.pre[0-9]*
 /_backups/
 Testing/
+__pycache__/

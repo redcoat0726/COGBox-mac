@@ -35,6 +35,8 @@ void XenosSetUiContext(rex::ui::WindowedAppContext* ui);  // layer 0 fps_bar.cpp
 // into this game's layer 2). Declared here so Gears 2's ue3/ include folder is not needed. After the renderer.
 void Ue3InstallShaderPrebuildIfRequested();
 
+REXCVAR_DECLARE(bool, gowj_hdr_native);
+
 REXCVAR_DECLARE(bool, gowj_mute_unfocused);  // game_patches.cpp
 
 void GowjAddBuiltInIniEdits();  // game_patches.cpp: --gowj_trilinear, --gowj_fast_mip_fade
@@ -107,6 +109,9 @@ class GowjApp : public rex::ReXApp {
     // Gears 2 notes/80 s.11: the upscalers take the frame's last scene copy, not the first of the mid-frame copies for
     // translucency, which was ~480 draws early: Ultra Performance added the rest at 720p, unjittered.
     game_default("gow2_upscale_scene_last_copy", "true");
+    // ...and, once a frame has drawn the fog pass, only a copy after it: a mid-frame copy before the fog on some frames
+    // (what is visible decides) was taken instead, leaving XeGTAO's AO (added at the fog) out: a one-frame flash.
+    game_default("gow2_upscale_scene_after_fog", "true");
     // Gears 2 notes/80 s.6: the upscalers' depth copied at the scene depth resolve - by the scene colour copy the game has
     // reused that EDRAM, and DLSS got one depth for the whole frame (distant edges broke up; captured 2026-11-04).
     game_default("gow2_upscale_depth_at_resolve", "true");
@@ -114,6 +119,12 @@ class GowjApp : public rex::ReXApp {
     // turns Judgment's own AO off with AmbientOcclusion=False.
     game_default("gow2_ao_fog_ps", "724AB5F143DBBFD4");
     game_default("gow2_renderer_memexport", "true");
+    // Blood decals, and the light passes drawn over a surface, flickered off as the camera moved (worst with DLSS): no
+    // depth write and a greater-or-equal test against the floor's own depth, which rounds the same on the console but
+    // not here. The decal offset raised to 0.01 as Gears 1 does (job 713), and - new for Judgment - those draws nudged
+    // 2 float24 steps toward passing (job 712's switch, off in every other game).
+    game_default("gow2_renderer_decal_min_bias", "0.01");
+    game_default("gow2_renderer_overlay_depth_nudge", "2");
     game_default("gow2_renderer_resolution_scale_threshold", "1120");
     //  - per-object motion vectors for DLSS / FSR / XeSS (#147 / #150): on (Shagg 11-06, tested clean); Gears 1 keeps it off
     game_default("gow2_upscale_object_motion", "true");
@@ -123,9 +134,9 @@ class GowjApp : public rex::ReXApp {
     //    still building is skipped and pops in. Judgment no longer sets pipeline_wait_ms / play_hold_draws (it set 0 / 8,
     //    and 8 would have brought the hold back - Shagg's 22:00 session froze up to 1 s per backlog).
     game_default("gow2_renderer_shader_backend", "dxbc");
-    // 0.6.1: no native-HDR profiles yet (false); the game reads its exposure back from a resolve (true) - see the hint.
+    // Native FP16 grading + post-scene FXAA; retain the original CPU eye-adaptation readback.
     XenosInstallRendererIfRequested(runtime(), {0x1E6883FCCDE1F688ull, 0xA4A965C189287B99ull, 0xB6C9863F710683ECull,
-                                                false, true});
+                    REXCVAR_GET(gowj_hdr_native), true, REXCVAR_GET(gowj_hdr_native)});
     Ue3InstallShaderPrebuildIfRequested();  // notes/78: after the renderer (it asks whether the renderer wants them)
     XenosInstallPm4ShadowIfRequested(runtime());
   }
