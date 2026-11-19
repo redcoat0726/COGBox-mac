@@ -14,7 +14,9 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32  // macOS port: the icon path below is Win32-only (HWND/HICON); nothing includes stb_image elsewhere
 #include <stb_image.h>  // the implementation is in renderer/prompt_overlay_compositor.cpp
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN

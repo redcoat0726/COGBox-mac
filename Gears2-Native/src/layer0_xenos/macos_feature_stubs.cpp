@@ -11,6 +11,7 @@
 
 #include <rex/cvar.h>
 #include <xenos/dev_tools.h>
+#include <xenos/player_tags.h>
 #include <xenos/renderer/prompt_overlay_compositor.h>
 #include <xenos/social_ingame.h>
 
@@ -75,6 +76,16 @@ SocialView XenosSocialView() {
 }
 std::vector<SocialEvent> XenosSocialTakeEvents() {
   return {};
+}
+
+// player_tags.cpp - the COGBox tag lookup and Recent players report (0.6.5). It needs the same
+// SDK online patches (identity, MasterClient). Lost: name tags from the master server and the
+// Recent list; offline play and the game's own names are untouched.
+std::optional<xenos::tags::Tag> XenosPlayerTag(uint64_t) {
+  return std::nullopt;
+}
+bool XenosPlayerTagsOnline() {
+  return false;
 }
 
 // renderer/dlss_framegen.cpp and renderer/xess_framegen.cpp - NVIDIA Streamline and Intel XeSS frame

@@ -166,6 +166,8 @@ if(APPLE)
         src/layer0_xenos/social_page.cpp
         src/layer0_xenos/social_popup.cpp
         src/layer0_xenos/social_shared.cpp
+        # 0.6.5: player tags/recent players use the same online SDK (identity, MasterClient).
+        src/layer0_xenos/player_tags.cpp
     )
     set_source_files_properties(${GN_MACOS_EXCLUDED} PROPERTIES HEADER_FILE_ONLY TRUE)
     message(STATUS "Gears-Native: excluding Windows-only sources on macOS")

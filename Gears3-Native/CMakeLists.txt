@@ -38,7 +38,7 @@ list(FILTER GN_LAYER0_SOURCES EXCLUDE REGEX "(dlss|fsr|xess)_upscaler\\.cpp$")
 # XInput, DXGI adapter reports, GetFileEx attributes, PNG screenshots). Idempotent port patch.
 if(NOT WIN32)
     list(FILTER GN_LAYER0_SOURCES EXCLUDE REGEX
-        "(save_watch|frame_capture|ingame_menu|latency_reflex|crash_report|system_report|prompt_overlay_compositor|dlss_framegen|xess_framegen|social_ingame|social_page|social_popup|social_shared)\\.cpp$")
+        "(save_watch|frame_capture|ingame_menu|latency_reflex|crash_report|system_report|prompt_overlay_compositor|dlss_framegen|xess_framegen|social_ingame|social_page|social_popup|social_shared|player_tags)\\.cpp$")
 endif()
 add_library(gn_layer0_xenos STATIC ${GN_LAYER0_SOURCES})
 target_include_directories(gn_layer0_xenos PUBLIC ${GN_LAYER0_DIR}/include)

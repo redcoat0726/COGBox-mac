@@ -89,8 +89,11 @@ fi
 #   54  user_gamertag
 #   55  pad_remap / pad_radial_deadzone     (after 38)
 #   60  keybind_walk / mnk_walk_*          (after 59; none of 56-59 is needed here)
+#  116  Vulkan pipeline libraries          (0.6.5; shadow_renderer.cpp calls the two free functions)
 # Skipped on purpose: 39/40 (bare filenames, unrelated input/audio fixes), 41-44, 46, 48, 52, 53,
-# 56-67 (diagnostics, save/online fixes), and 66 (Windows-only volume mixer).
+# 56-67 (diagnostics, save/online fixes), 95-115 (online/kernel/input; the 0.6.5 game code does
+# not call them, and 113/113b/115 expect the unapplied 95-112 line), and 66 (Windows-only volume
+# mixer).
 EXTRA_MARK="$TREE/.cogbox-extra-patches"
 if [ ! -f "$EXTRA_MARK" ]; then
   PATCHES="$(cd "$(dirname "$0")" && pwd)/../Gears2-Native/patches"
@@ -114,6 +117,8 @@ if [ ! -f "$EXTRA_MARK" ]; then
     apply_p1 sdk-patch60-walk-key.diff
     apply_p1 sdk-patch61-present-pipeline-format.diff
     apply_p1 sdk-patch94-macos-input-stubs.diff
+    # 0.6.5's shadow_renderer.cpp links against these two (SDK runtime 066).
+    apply_p1 sdk-patch116-vulkan-pipeline-library.diff
   ) || { echo "build_sdk.sh: a later SDK patch failed; see the output above" >&2; exit 1; }
   touch "$EXTRA_MARK"
   echo "   later SDK patches applied"

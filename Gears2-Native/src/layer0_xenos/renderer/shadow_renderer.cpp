@@ -4063,7 +4063,6 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
   std::unordered_set<uint64_t> native_hdr_unknown_writers_;
   rr::RenderTargetKey native_hdr_key_{};
   bool native_hdr_valid_ = false, native_hdr_aa_ready_ = false;
-  rr::native_hdr::Gears3CurveCache native_hdr_curve_cache_;
   gpu::PipelineHandle native_hdr_smaa_blend_ = 0, native_hdr_copy_ = 0;
   gpu::PipelineHandle native_hdr_ui_prepare_pipe_ = 0, native_hdr_ui_copy_pipe_ = 0, native_hdr_ui_blend_pipe_ = 0;
   gpu::TextureHandle native_hdr_ui_proxy_ = 0, native_hdr_ui_high_ = 0, native_hdr_ui_low_ = 0;
@@ -4617,18 +4616,8 @@ float4 main(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target0 {
     SystemConstants hdr_constants = constants;
     hdr_constants.sys2[0] = std::bit_cast<uint32_t>(HdrPeak() / HdrSceneWhite());
     hdr_constants.sys2[1] = std::bit_cast<uint32_t>(HdrUiWhite() / HdrSceneWhite());
-    if (gears3_scene) {
-      const auto curve = rr::native_hdr::Gears3Curve::FromConstants(pixel_constants);
-      const auto [pivot, slope] = native_hdr_curve_cache_.Get(curve);
-      hdr_constants.sys2[2] = std::bit_cast<uint32_t>(pivot);
-      hdr_constants.sys2[3] = std::bit_cast<uint32_t>(slope);
-      if (native_hdr_generation_ <= 3)
-        REXLOG_INFO("gow2_native_hdr: Gears 3 curve offset {} scale {} blend {}, pivot {} slope {}",
-                    curve.offset, curve.scale, curve.blend, pivot, slope);
-    } else {
-      hdr_constants.sys2[2] = std::bit_cast<uint32_t>(HdrHighlights());   // 0.6.2: highlight strength + 1
-      hdr_constants.sys2[3] = 0;
-    }
+    hdr_constants.sys2[2] = std::bit_cast<uint32_t>(HdrHighlights());   // 0.6.2: highlight strength + 1
+    hdr_constants.sys2[3] = 0;
     backend_->SetConstants(gpu::ShaderStage::kPixel, gpu::kCbSystem, &hdr_constants, sizeof(hdr_constants));
     backend_->SetPipeline(pipeline);
     issue(paired ? depth : nullptr, 0, paired && rr::native_hdr::IsJudgmentScene(shader.ucode_hash) ?judgment_scene_stage_:scene_ui?native_hdr_ui_high_:native_hdr_color_,
